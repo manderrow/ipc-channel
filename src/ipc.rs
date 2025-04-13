@@ -13,7 +13,7 @@ use crate::platform::{
     OsIpcOneShotServer, OsIpcSelectionResult, OsIpcSharedMemory, OsOpaqueIpcChannel,
 };
 
-use bincode::{Decode, Encode};
+use bincode::{BorrowDecode, Decode, Encode};
 use std::cell::RefCell;
 use std::cmp::min;
 use std::fmt::{self, Debug, Formatter};
@@ -249,7 +249,7 @@ impl<T> IpcReceiver<T> {
     }
 }
 
-impl<'de, T> Decode<Context> for IpcReceiver<T> {
+impl<T> Decode<Context> for IpcReceiver<T> {
     fn decode<D: bincode::de::Decoder<Context = Context>>(
         decoder: &mut D,
     ) -> Result<Self, bincode::error::DecodeError> {
@@ -258,6 +258,14 @@ impl<'de, T> Decode<Context> for IpcReceiver<T> {
             os_receiver,
             phantom: PhantomData,
         })
+    }
+}
+
+impl<'de, T> BorrowDecode<'de, Context> for IpcReceiver<T> {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        Self::decode(decoder)
     }
 }
 
@@ -365,6 +373,14 @@ impl<'de, T> Decode<Context> for IpcSender<T> {
             os_sender,
             phantom: PhantomData,
         })
+    }
+}
+
+impl<'de, T> BorrowDecode<'de, Context> for IpcSender<T> {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        Self::decode(decoder)
     }
 }
 
@@ -535,6 +551,14 @@ impl<'de> Decode<Context> for IpcSharedMemory {
         Ok(IpcSharedMemory {
             os_shared_memory: Some(os_shared_memory),
         })
+    }
+}
+
+impl<'de> BorrowDecode<'de, Context> for IpcSharedMemory {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        Self::decode(decoder)
     }
 }
 
@@ -740,6 +764,14 @@ impl<'de> Decode<Context> for OpaqueIpcSender {
     }
 }
 
+impl<'de> BorrowDecode<'de, Context> for OpaqueIpcSender {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        Self::decode(decoder)
+    }
+}
+
 impl Encode for OpaqueIpcSender {
     fn encode<E: bincode::enc::Encoder>(
         &self,
@@ -769,6 +801,14 @@ impl<'de> Decode<Context> for OpaqueIpcReceiver {
     ) -> Result<Self, bincode::error::DecodeError> {
         let os_receiver = deserialize_os_ipc_receiver(decoder)?;
         Ok(Self { os_receiver })
+    }
+}
+
+impl<'de> BorrowDecode<'de, Context> for OpaqueIpcReceiver {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        Self::decode(decoder)
     }
 }
 
@@ -881,6 +921,14 @@ impl<'de> Decode<Context> for IpcBytesReceiver {
     }
 }
 
+impl<'de> BorrowDecode<'de, Context> for IpcBytesReceiver {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        Self::decode(decoder)
+    }
+}
+
 impl Encode for IpcBytesReceiver {
     fn encode<E: bincode::enc::Encoder>(
         &self,
@@ -910,6 +958,14 @@ impl<'de> Decode<Context> for IpcBytesSender {
     ) -> Result<Self, bincode::error::DecodeError> {
         let os_sender = deserialize_os_ipc_sender(decoder)?;
         Ok(Self { os_sender })
+    }
+}
+
+impl<'de> BorrowDecode<'de, Context> for IpcBytesSender {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        Self::decode(decoder)
     }
 }
 
