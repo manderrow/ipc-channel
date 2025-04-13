@@ -7,14 +7,17 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[cfg(all(
-    not(feature = "force-inprocess"),
-    any(
-        target_os = "linux",
-        target_os = "openbsd",
-        target_os = "freebsd",
-        target_os = "illumos",
-    )
+#[cfg(any(
+    all(
+        not(feature = "force-inprocess"),
+        any(
+            target_os = "linux",
+            target_os = "openbsd",
+            target_os = "freebsd",
+            target_os = "illumos",
+        )
+    ),
+    rust_analyzer
 ))]
 mod unix;
 #[cfg(all(
@@ -32,7 +35,10 @@ mod os {
     pub use UnixError as OsError;
 }
 
-#[cfg(all(not(feature = "force-inprocess"), target_os = "macos"))]
+#[cfg(any(
+    all(not(feature = "force-inprocess"), target_os = "macos"),
+    rust_analyzer
+))]
 mod macos;
 #[cfg(all(not(feature = "force-inprocess"), target_os = "macos"))]
 mod os {
@@ -41,7 +47,10 @@ mod os {
     pub use MachError as OsError;
 }
 
-#[cfg(all(not(feature = "force-inprocess"), target_os = "windows"))]
+#[cfg(any(
+    all(not(feature = "force-inprocess"), target_os = "windows"),
+    rust_analyzer
+))]
 mod windows;
 #[cfg(all(not(feature = "force-inprocess"), target_os = "windows"))]
 mod os {
