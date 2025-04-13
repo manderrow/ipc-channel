@@ -22,16 +22,7 @@ use crate::platform::{OsIpcOneShotServer, OsIpcSender};
     target_os = "android",
     target_os = "ios"
 )))]
-use crate::test::{fork, Wait};
-#[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios")))]
-use libc;
-#[cfg(not(any(
-    feature = "force-inprocess",
-    target_os = "windows",
-    target_os = "android",
-    target_os = "ios"
-)))]
-use libc::{kill, SIGCONT, SIGSTOP};
+use crate::test::{Wait, fork};
 
 // Helper to get a channel_name argument passed in; used for the
 // cross-process spawn server tests.
@@ -245,7 +236,8 @@ mod fragment_tests {
     use super::with_n_fds;
     use crate::platform;
 
-    static FRAGMENT_SIZE: LazyLock<usize> = LazyLock::new(|| platform::OsIpcSender::get_max_fragment_size());
+    static FRAGMENT_SIZE: LazyLock<usize> =
+        LazyLock::new(|| platform::OsIpcSender::get_max_fragment_size());
 
     #[test]
     fn full_packet() {
@@ -483,11 +475,9 @@ fn receiver_set_eintr() {
     let (server, mut ipc_message) = server.accept().unwrap();
     assert!(ipc_message.data == b" Ready! ");
     let tx1 = ipc_message.os_ipc_channels.first_mut().unwrap().to_sender();
-    unsafe {
-        kill(child_pid, SIGSTOP);
-        thread::sleep(Duration::from_millis(42));
-        kill(child_pid, SIGCONT);
-    }
+    rustix::process::kill_process(child_pid, rustix::process::Signal::STOP).unwrap();
+    thread::sleep(Duration::from_millis(42));
+    rustix::process::kill_process(child_pid, rustix::process::Signal::CONT).unwrap();
     // The interrupt shouldn't affect the following send
     tx1.send(b"Test", vec![], vec![]).unwrap();
     let ipc_message = server.recv().unwrap();
@@ -729,9 +719,8 @@ fn cross_process_spawn() {
         let tx = OsIpcSender::connect(channel_name).unwrap();
         tx.send(data, vec![], vec![]).unwrap();
 
-        unsafe {
-            libc::exit(0);
-        }
+        // TODO: can we use std::process::exit safely?
+        unsafe { libc::exit(0) };
     }
 
     let (server, name) = OsIpcOneShotServer::new().unwrap();
@@ -780,9 +769,8 @@ fn cross_process_sender_transfer_spawn() {
         let data: &[u8] = b"bar";
         super_tx.send(data, vec![], vec![]).unwrap();
 
-        unsafe {
-            libc::exit(0);
-        }
+        // TODO: can we use std::process::exit safely?
+        unsafe { libc::exit(0) };
     }
 
     let (server, name) = OsIpcOneShotServer::new().unwrap();
@@ -925,9 +913,11 @@ fn shared_memory() {
         ipc_message.os_ipc_shared_memory_regions[0].len(),
         1024 * 1024
     );
-    assert!(ipc_message.os_ipc_shared_memory_regions[0]
-        .iter()
-        .all(|byte| *byte == 0xba));
+    assert!(
+        ipc_message.os_ipc_shared_memory_regions[0]
+            .iter()
+            .all(|byte| *byte == 0xba)
+    );
 }
 
 #[test]
@@ -1151,9 +1141,8 @@ fn cross_process_two_step_transfer_spawn() {
         super_tx.send(&ipc_message.data, vec![], vec![]).unwrap();
 
         // terminate
-        unsafe {
-            libc::exit(0);
-        }
+        // TODO: can we use std::process::exit safely?
+        unsafe { libc::exit(0) };
     }
 
     // create channel 1

@@ -20,13 +20,6 @@ use std::env;
 use std::iter;
 #[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios",)))]
 use std::process::{self, Command, Stdio};
-#[cfg(not(any(
-    feature = "force-inprocess",
-    target_os = "android",
-    target_os = "ios",
-    target_os = "windows",
-)))]
-use std::ptr;
 use std::rc::Rc;
 use std::thread;
 
@@ -54,14 +47,16 @@ use std::time::{Duration, Instant};
     target_os = "ios"
 )))]
 // I'm not actually sure invoking this is indeed unsafe -- but better safe than sorry...
-pub unsafe fn fork<F: FnOnce()>(child_func: F) -> libc::pid_t {
+pub unsafe fn fork<F: FnOnce()>(child_func: F) -> rustix::process::Pid {
     match unsafe { libc::fork() } {
+        ..-1 => unreachable!(),
         -1 => panic!("Fork failed: {}", Error::last_os_error()),
         0 => {
             child_func();
+            // TODO: can we use std::process::exit safely?
             unsafe { libc::exit(0) };
         },
-        pid => pid,
+        pid => rustix::process::Pid::from_raw(pid).unwrap(),
     }
 }
 
@@ -81,11 +76,9 @@ pub trait Wait {
     target_os = "android",
     target_os = "ios"
 )))]
-impl Wait for libc::pid_t {
+impl Wait for rustix::process::Pid {
     fn wait(self) {
-        unsafe {
-            libc::waitpid(self, ptr::null_mut(), 0);
-        }
+        rustix::process::waitpid(Some(self), rustix::process::WaitOptions::empty()).unwrap();
     }
 }
 
@@ -232,9 +225,8 @@ fn cross_process_embedded_senders_spawn() {
         let tx2: IpcSender<Person> = IpcSender::connect(server2_name).unwrap();
         tx2.send(person.clone()).unwrap();
 
-        unsafe {
-            libc::exit(0);
-        }
+        // TODO: can we use std::process::exit safely?
+        unsafe { libc::exit(0) };
     }
 }
 
