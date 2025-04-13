@@ -2,7 +2,7 @@
 
 // Some manual additions to fix up bindgen output
 
-extern "C" {
+unsafe extern "C" {
     pub static mut mach_task_self_: mach_port_t;
 }
 
@@ -3330,7 +3330,7 @@ pub type mach_msg_type_size_t = natural_t;
 pub type mach_msg_type_number_t = natural_t;
 pub type mach_msg_option_t = integer_t;
 pub type mach_msg_return_t = kern_return_t;
-extern "C" {
+unsafe extern "C" {
     pub fn mach_msg_overwrite(
         msg: *mut mach_msg_header_t,
         option: mach_msg_option_t,
@@ -3342,8 +3342,7 @@ extern "C" {
         rcv_msg: *mut mach_msg_header_t,
         rcv_limit: mach_msg_size_t,
     ) -> mach_msg_return_t;
-}
-extern "C" {
+
     pub fn mach_msg(
         msg: *mut mach_msg_header_t,
         option: mach_msg_option_t,
@@ -3353,8 +3352,7 @@ extern "C" {
         timeout: mach_msg_timeout_t,
         notify: mach_port_name_t,
     ) -> mach_msg_return_t;
-}
-extern "C" {
+
     pub fn mach_voucher_deallocate(voucher: mach_port_name_t) -> kern_return_t;
 }
 #[repr(C)]
@@ -3831,7 +3829,7 @@ fn bindgen_test_layout_vm_statistics64() {
 }
 pub type vm_statistics64_t = *mut vm_statistics64;
 pub type vm_statistics64_data_t = vm_statistics64;
-extern "C" {
+unsafe extern "C" {
     pub fn vm_stats(
         info: *mut ::std::os::raw::c_void,
         count: *mut ::std::os::raw::c_uint,
@@ -16975,19 +16973,15 @@ pub type user_subsystem_t = *mut ::std::os::raw::c_char;
 pub type labelstr_t = *mut ::std::os::raw::c_char;
 pub type va_list = __builtin_va_list;
 pub type __gnuc_va_list = __builtin_va_list;
-extern "C" {
+unsafe extern "C" {
     pub fn mach_host_self() -> mach_port_t;
-}
-extern "C" {
+
     pub fn mach_thread_self() -> mach_port_t;
-}
-extern "C" {
+
     pub fn mach_task_is_self(task: task_name_t) -> boolean_t;
-}
-extern "C" {
+
     pub fn host_page_size(arg1: host_t, arg2: *mut vm_size_t) -> kern_return_t;
-}
-extern "C" {
+
     pub fn clock_sleep_trap(
         clock_name: mach_port_name_t,
         sleep_type: sleep_type_t,
@@ -16995,29 +16989,25 @@ extern "C" {
         sleep_nsec: ::std::os::raw::c_int,
         wakeup_time: *mut mach_timespec_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_vm_allocate_trap(
         target: mach_port_name_t,
         addr: *mut mach_vm_offset_t,
         size: mach_vm_size_t,
         flags: ::std::os::raw::c_int,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_vm_deallocate_trap(
         target: mach_port_name_t,
         address: mach_vm_address_t,
         size: mach_vm_size_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_dyld_process_info_notify_get(
         names_addr: mach_port_name_array_t,
         names_count_addr: *mut natural_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_vm_protect_trap(
         target: mach_port_name_t,
         address: mach_vm_address_t,
@@ -17025,8 +17015,7 @@ extern "C" {
         set_maximum: boolean_t,
         new_protection: vm_prot_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_vm_map_trap(
         target: mach_port_name_t,
         address: *mut mach_vm_offset_t,
@@ -17035,52 +17024,45 @@ extern "C" {
         flags: ::std::os::raw::c_int,
         cur_protection: vm_prot_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_vm_purgable_control_trap(
         target: mach_port_name_t,
         address: mach_vm_offset_t,
         control: vm_purgable_t,
         state: *mut ::std::os::raw::c_int,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_port_allocate_trap(
         target: mach_port_name_t,
         right: mach_port_right_t,
         name: *mut mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_port_deallocate_trap(
         target: mach_port_name_t,
         name: mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_port_mod_refs_trap(
         target: mach_port_name_t,
         name: mach_port_name_t,
         right: mach_port_right_t,
         delta: mach_port_delta_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_port_move_member_trap(
         target: mach_port_name_t,
         member: mach_port_name_t,
         after: mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_port_insert_right_trap(
         target: mach_port_name_t,
         name: mach_port_name_t,
         poly: mach_port_name_t,
         polyPoly: mach_msg_type_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_port_get_attributes_trap(
         target: mach_port_name_t,
         name: mach_port_name_t,
@@ -17088,124 +17070,104 @@ extern "C" {
         port_info_out: mach_port_info_t,
         port_info_outCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_port_insert_member_trap(
         target: mach_port_name_t,
         name: mach_port_name_t,
         pset: mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_port_extract_member_trap(
         target: mach_port_name_t,
         name: mach_port_name_t,
         pset: mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_port_construct_trap(
         target: mach_port_name_t,
         options: *mut mach_port_options_t,
         context: u64,
         name: *mut mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_port_destruct_trap(
         target: mach_port_name_t,
         name: mach_port_name_t,
         srdelta: mach_port_delta_t,
         guard: u64,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_port_guard_trap(
         target: mach_port_name_t,
         name: mach_port_name_t,
         guard: u64,
         strict: boolean_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_port_unguard_trap(
         target: mach_port_name_t,
         name: mach_port_name_t,
         guard: u64,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_generate_activity_id(
         target: mach_port_name_t,
         count: ::std::os::raw::c_int,
         activity_id: *mut u64,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn macx_swapon(
         filename: u64,
         flags: ::std::os::raw::c_int,
         size: ::std::os::raw::c_int,
         priority: ::std::os::raw::c_int,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn macx_swapoff(filename: u64, flags: ::std::os::raw::c_int) -> kern_return_t;
-}
-extern "C" {
+
     pub fn macx_triggers(
         hi_water: ::std::os::raw::c_int,
         low_water: ::std::os::raw::c_int,
         flags: ::std::os::raw::c_int,
         alert_port: mach_port_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn macx_backing_store_suspend(suspend: boolean_t) -> kern_return_t;
-}
-extern "C" {
+
     pub fn macx_backing_store_recovery(pid: ::std::os::raw::c_int) -> kern_return_t;
-}
-extern "C" {
+
     pub fn swtch_pri(pri: ::std::os::raw::c_int) -> boolean_t;
-}
-extern "C" {
+
     pub fn swtch() -> boolean_t;
-}
-extern "C" {
+
     pub fn thread_switch(
         thread_name: mach_port_name_t,
         option: ::std::os::raw::c_int,
         option_time: mach_msg_timeout_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_self_trap() -> mach_port_name_t;
-}
-extern "C" {
+
     pub fn host_create_mach_voucher_trap(
         host: mach_port_name_t,
         recipes: mach_voucher_attr_raw_recipe_array_t,
         recipes_size: ::std::os::raw::c_int,
         voucher: *mut mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_voucher_extract_attr_recipe_trap(
         voucher_name: mach_port_name_t,
         key: mach_voucher_attr_key_t,
         recipe: mach_voucher_attr_raw_recipe_t,
         recipe_size: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_port_type_trap(
         task: ipc_space_t,
         name: mach_port_name_t,
         ptype: *mut mach_port_type_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn _kernelrpc_mach_port_request_notification_trap(
         task: ipc_space_t,
         name: mach_port_name_t,
@@ -17215,25 +17177,21 @@ extern "C" {
         notifyPoly: mach_msg_type_name_t,
         previous: *mut mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_for_pid(
         target_tport: mach_port_name_t,
         pid: ::std::os::raw::c_int,
         t: *mut mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_name_for_pid(
         target_tport: mach_port_name_t,
         pid: ::std::os::raw::c_int,
         tn: *mut mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn pid_for_task(t: mach_port_name_t, x: *mut ::std::os::raw::c_int) -> kern_return_t;
-}
-extern "C" {
+
     pub fn debug_control_port_for_pid(
         target_tport: mach_port_name_t,
         pid: ::std::os::raw::c_int,
@@ -17243,345 +17201,289 @@ extern "C" {
 pub type __darwin_nl_item = ::std::os::raw::c_int;
 pub type __darwin_wctrans_t = ::std::os::raw::c_int;
 pub type __darwin_wctype_t = __uint32_t;
-extern "C" {
+unsafe extern "C" {
     pub fn memchr(
         __s: *const ::std::os::raw::c_void,
         __c: ::std::os::raw::c_int,
         __n: ::std::os::raw::c_ulong,
     ) -> *mut ::std::os::raw::c_void;
-}
-extern "C" {
+
     pub fn memcmp(
         __s1: *const ::std::os::raw::c_void,
         __s2: *const ::std::os::raw::c_void,
         __n: ::std::os::raw::c_ulong,
     ) -> ::std::os::raw::c_int;
-}
-extern "C" {
+
     pub fn memcpy(
         __dst: *mut ::std::os::raw::c_void,
         __src: *const ::std::os::raw::c_void,
         __n: ::std::os::raw::c_ulong,
     ) -> *mut ::std::os::raw::c_void;
-}
-extern "C" {
+
     pub fn memmove(
         __dst: *mut ::std::os::raw::c_void,
         __src: *const ::std::os::raw::c_void,
         __len: ::std::os::raw::c_ulong,
     ) -> *mut ::std::os::raw::c_void;
-}
-extern "C" {
+
     pub fn memset(
         __b: *mut ::std::os::raw::c_void,
         __c: ::std::os::raw::c_int,
         __len: ::std::os::raw::c_ulong,
     ) -> *mut ::std::os::raw::c_void;
-}
-extern "C" {
+
     pub fn strcat(
         __s1: *mut ::std::os::raw::c_char,
         __s2: *const ::std::os::raw::c_char,
     ) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn strchr(
         __s: *const ::std::os::raw::c_char,
         __c: ::std::os::raw::c_int,
     ) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn strcmp(
         __s1: *const ::std::os::raw::c_char,
         __s2: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
-}
-extern "C" {
+
     pub fn strcoll(
         __s1: *const ::std::os::raw::c_char,
         __s2: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
-}
-extern "C" {
+
     pub fn strcpy(
         __dst: *mut ::std::os::raw::c_char,
         __src: *const ::std::os::raw::c_char,
     ) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn strcspn(
         __s: *const ::std::os::raw::c_char,
         __charset: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_ulong;
-}
-extern "C" {
+
     pub fn strerror(__errnum: ::std::os::raw::c_int) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn strlen(__s: *const ::std::os::raw::c_char) -> ::std::os::raw::c_ulong;
-}
-extern "C" {
+
     pub fn strncat(
         __s1: *mut ::std::os::raw::c_char,
         __s2: *const ::std::os::raw::c_char,
         __n: ::std::os::raw::c_ulong,
     ) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn strncmp(
         __s1: *const ::std::os::raw::c_char,
         __s2: *const ::std::os::raw::c_char,
         __n: ::std::os::raw::c_ulong,
     ) -> ::std::os::raw::c_int;
-}
-extern "C" {
+
     pub fn strncpy(
         __dst: *mut ::std::os::raw::c_char,
         __src: *const ::std::os::raw::c_char,
         __n: ::std::os::raw::c_ulong,
     ) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn strpbrk(
         __s: *const ::std::os::raw::c_char,
         __charset: *const ::std::os::raw::c_char,
     ) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn strrchr(
         __s: *const ::std::os::raw::c_char,
         __c: ::std::os::raw::c_int,
     ) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn strspn(
         __s: *const ::std::os::raw::c_char,
         __charset: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_ulong;
-}
-extern "C" {
+
     pub fn strstr(
         __big: *const ::std::os::raw::c_char,
         __little: *const ::std::os::raw::c_char,
     ) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn strtok(
         __str: *mut ::std::os::raw::c_char,
         __sep: *const ::std::os::raw::c_char,
     ) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn strxfrm(
         __s1: *mut ::std::os::raw::c_char,
         __s2: *const ::std::os::raw::c_char,
         __n: ::std::os::raw::c_ulong,
     ) -> ::std::os::raw::c_ulong;
-}
-extern "C" {
+
     pub fn strtok_r(
         __str: *mut ::std::os::raw::c_char,
         __sep: *const ::std::os::raw::c_char,
         __lasts: *mut *mut ::std::os::raw::c_char,
     ) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn strerror_r(
         __errnum: ::std::os::raw::c_int,
         __strerrbuf: *mut ::std::os::raw::c_char,
         __buflen: usize,
     ) -> ::std::os::raw::c_int;
-}
-extern "C" {
+
     pub fn strdup(__s1: *const ::std::os::raw::c_char) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn memccpy(
         __dst: *mut ::std::os::raw::c_void,
         __src: *const ::std::os::raw::c_void,
         __c: ::std::os::raw::c_int,
         __n: ::std::os::raw::c_ulong,
     ) -> *mut ::std::os::raw::c_void;
-}
-extern "C" {
+
     pub fn stpcpy(
         __dst: *mut ::std::os::raw::c_char,
         __src: *const ::std::os::raw::c_char,
     ) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn stpncpy(
         __dst: *mut ::std::os::raw::c_char,
         __src: *const ::std::os::raw::c_char,
         __n: ::std::os::raw::c_ulong,
     ) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn strndup(
         __s1: *const ::std::os::raw::c_char,
         __n: ::std::os::raw::c_ulong,
     ) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn strnlen(__s1: *const ::std::os::raw::c_char, __n: usize) -> usize;
-}
-extern "C" {
+
     pub fn strsignal(__sig: ::std::os::raw::c_int) -> *mut ::std::os::raw::c_char;
 }
 pub type rsize_t = __darwin_size_t;
 pub type errno_t = ::std::os::raw::c_int;
-extern "C" {
+unsafe extern "C" {
     pub fn memset_s(
         __s: *mut ::std::os::raw::c_void,
         __smax: rsize_t,
         __c: ::std::os::raw::c_int,
         __n: rsize_t,
     ) -> errno_t;
-}
-extern "C" {
+
     pub fn memmem(
         __big: *const ::std::os::raw::c_void,
         __big_len: usize,
         __little: *const ::std::os::raw::c_void,
         __little_len: usize,
     ) -> *mut ::std::os::raw::c_void;
-}
-extern "C" {
+
     pub fn memset_pattern4(
         __b: *mut ::std::os::raw::c_void,
         __pattern4: *const ::std::os::raw::c_void,
         __len: usize,
     );
-}
-extern "C" {
+
     pub fn memset_pattern8(
         __b: *mut ::std::os::raw::c_void,
         __pattern8: *const ::std::os::raw::c_void,
         __len: usize,
     );
-}
-extern "C" {
+
     pub fn memset_pattern16(
         __b: *mut ::std::os::raw::c_void,
         __pattern16: *const ::std::os::raw::c_void,
         __len: usize,
     );
-}
-extern "C" {
+
     pub fn strcasestr(
         __big: *const ::std::os::raw::c_char,
         __little: *const ::std::os::raw::c_char,
     ) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn strnstr(
         __big: *const ::std::os::raw::c_char,
         __little: *const ::std::os::raw::c_char,
         __len: usize,
     ) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn strlcat(
         __dst: *mut ::std::os::raw::c_char,
         __source: *const ::std::os::raw::c_char,
         __size: ::std::os::raw::c_ulong,
     ) -> ::std::os::raw::c_ulong;
-}
-extern "C" {
+
     pub fn strlcpy(
         __dst: *mut ::std::os::raw::c_char,
         __source: *const ::std::os::raw::c_char,
         __size: ::std::os::raw::c_ulong,
     ) -> ::std::os::raw::c_ulong;
-}
-extern "C" {
+
     pub fn strmode(__mode: ::std::os::raw::c_int, __bp: *mut ::std::os::raw::c_char);
-}
-extern "C" {
+
     pub fn strsep(
         __stringp: *mut *mut ::std::os::raw::c_char,
         __delim: *const ::std::os::raw::c_char,
     ) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn swab(
         arg1: *const ::std::os::raw::c_void,
         arg2: *mut ::std::os::raw::c_void,
         arg3: isize,
     );
-}
-extern "C" {
+
     pub fn timingsafe_bcmp(
         __b1: *const ::std::os::raw::c_void,
         __b2: *const ::std::os::raw::c_void,
         __len: usize,
     ) -> ::std::os::raw::c_int;
-}
-extern "C" {
+
     pub fn strsignal_r(
         __sig: ::std::os::raw::c_int,
         __strsignalbuf: *mut ::std::os::raw::c_char,
         __buflen: usize,
     ) -> ::std::os::raw::c_int;
-}
-extern "C" {
+
     pub fn bcmp(
         arg1: *const ::std::os::raw::c_void,
         arg2: *const ::std::os::raw::c_void,
         arg3: ::std::os::raw::c_ulong,
     ) -> ::std::os::raw::c_int;
-}
-extern "C" {
+
     pub fn bcopy(
         arg1: *const ::std::os::raw::c_void,
         arg2: *mut ::std::os::raw::c_void,
         arg3: usize,
     );
-}
-extern "C" {
+
     pub fn bzero(arg1: *mut ::std::os::raw::c_void, arg2: ::std::os::raw::c_ulong);
-}
-extern "C" {
+
     pub fn index(
         arg1: *const ::std::os::raw::c_char,
         arg2: ::std::os::raw::c_int,
     ) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn rindex(
         arg1: *const ::std::os::raw::c_char,
         arg2: ::std::os::raw::c_int,
     ) -> *mut ::std::os::raw::c_char;
-}
-extern "C" {
+
     pub fn ffs(arg1: ::std::os::raw::c_int) -> ::std::os::raw::c_int;
-}
-extern "C" {
+
     pub fn strcasecmp(
         arg1: *const ::std::os::raw::c_char,
         arg2: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
-}
-extern "C" {
+
     pub fn strncasecmp(
         arg1: *const ::std::os::raw::c_char,
         arg2: *const ::std::os::raw::c_char,
         arg3: ::std::os::raw::c_ulong,
     ) -> ::std::os::raw::c_int;
-}
-extern "C" {
+
     pub fn ffsl(arg1: ::std::os::raw::c_long) -> ::std::os::raw::c_int;
-}
-extern "C" {
+
     pub fn ffsll(arg1: ::std::os::raw::c_longlong) -> ::std::os::raw::c_int;
-}
-extern "C" {
+
     pub fn fls(arg1: ::std::os::raw::c_int) -> ::std::os::raw::c_int;
-}
-extern "C" {
+
     pub fn flsl(arg1: ::std::os::raw::c_long) -> ::std::os::raw::c_int;
-}
-extern "C" {
+
     pub fn flsll(arg1: ::std::os::raw::c_longlong) -> ::std::os::raw::c_int;
 }
 pub const OSUnknownByteOrder: _bindgen_ty_1 = 0;
@@ -18304,33 +18206,27 @@ fn bindgen_test_layout_mig_symtab() {
     );
 }
 pub type mig_symtab_t = mig_symtab;
-extern "C" {
+unsafe extern "C" {
     pub fn mig_get_reply_port() -> mach_port_t;
-}
-extern "C" {
+
     pub fn mig_dealloc_reply_port(reply_port: mach_port_t);
-}
-extern "C" {
+
     pub fn mig_put_reply_port(reply_port: mach_port_t);
-}
-extern "C" {
+
     pub fn mig_strncpy(
         dest: *mut ::std::os::raw::c_char,
         src: *const ::std::os::raw::c_char,
         len: ::std::os::raw::c_int,
     ) -> ::std::os::raw::c_int;
-}
-extern "C" {
+
     pub fn mig_strncpy_zerofill(
         dest: *mut ::std::os::raw::c_char,
         src: *const ::std::os::raw::c_char,
         len: ::std::os::raw::c_int,
     ) -> ::std::os::raw::c_int;
-}
-extern "C" {
+
     pub fn mig_allocate(arg1: *mut vm_address_t, arg2: vm_size_t);
-}
-extern "C" {
+
     pub fn mig_deallocate(arg1: vm_address_t, arg2: vm_size_t);
 }
 #[repr(C)]
@@ -20372,7 +20268,7 @@ fn bindgen_test_layout_mach_core_fileheader_v2() {
     );
 }
 pub type kobject_description_t = [::std::os::raw::c_char; 512usize];
-extern "C" {
+unsafe extern "C" {
     pub fn task_create(
         target_task: task_t,
         ledgers: ledger_array_t,
@@ -20380,71 +20276,59 @@ extern "C" {
         inherit_memory: boolean_t,
         child_task: *mut task_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_terminate(target_task: task_t) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_threads(
         target_task: task_inspect_t,
         act_list: *mut thread_act_array_t,
         act_listCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_ports_register(
         target_task: task_t,
         init_port_set: mach_port_array_t,
         init_port_setCnt: mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_ports_lookup(
         target_task: task_t,
         init_port_set: *mut mach_port_array_t,
         init_port_setCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_info(
         target_task: task_name_t,
         flavor: task_flavor_t,
         task_info_out: task_info_t,
         task_info_outCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_set_info(
         target_task: task_t,
         flavor: task_flavor_t,
         task_info_in: task_info_t,
         task_info_inCnt: mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_suspend(target_task: task_read_t) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_resume(target_task: task_read_t) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_get_special_port(
         task: task_inspect_t,
         which_port: ::std::os::raw::c_int,
         special_port: *mut mach_port_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_set_special_port(
         task: task_t,
         which_port: ::std::os::raw::c_int,
         special_port: mach_port_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn thread_create(parent_task: task_t, child_act: *mut thread_act_t) -> kern_return_t;
-}
-extern "C" {
+
     pub fn thread_create_running(
         parent_task: task_t,
         flavor: thread_state_flavor_t,
@@ -20452,8 +20336,7 @@ extern "C" {
         new_stateCnt: mach_msg_type_number_t,
         child_act: *mut thread_act_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_set_exception_ports(
         task: task_t,
         exception_mask: exception_mask_t,
@@ -20461,8 +20344,7 @@ extern "C" {
         behavior: exception_behavior_t,
         new_flavor: thread_state_flavor_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_get_exception_ports(
         task: task_t,
         exception_mask: exception_mask_t,
@@ -20472,8 +20354,7 @@ extern "C" {
         old_behaviors: exception_behavior_array_t,
         old_flavors: exception_flavor_array_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_swap_exception_ports(
         task: task_t,
         exception_mask: exception_mask_t,
@@ -20486,38 +20367,32 @@ extern "C" {
         old_behaviors: exception_behavior_array_t,
         old_flavors: exception_flavor_array_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn lock_set_create(
         task: task_t,
         new_lock_set: *mut lock_set_t,
         n_ulocks: ::std::os::raw::c_int,
         policy: ::std::os::raw::c_int,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn lock_set_destroy(task: task_t, lock_set: lock_set_t) -> kern_return_t;
-}
-extern "C" {
+
     pub fn semaphore_create(
         task: task_t,
         semaphore: *mut semaphore_t,
         policy: ::std::os::raw::c_int,
         value: ::std::os::raw::c_int,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn semaphore_destroy(task: task_t, semaphore: semaphore_t) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_policy_set(
         task: task_policy_set_t,
         flavor: task_policy_flavor_t,
         policy_info: task_policy_t,
         policy_infoCnt: mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_policy_get(
         task: task_policy_get_t,
         flavor: task_policy_flavor_t,
@@ -20525,11 +20400,9 @@ extern "C" {
         policy_infoCnt: *mut mach_msg_type_number_t,
         get_default: *mut boolean_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_sample(task: task_t, reply: mach_port_t) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_policy(
         task: task_t,
         policy: policy_t,
@@ -20538,38 +20411,33 @@ extern "C" {
         set_limit: boolean_t,
         change: boolean_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_set_emulation(
         target_port: task_t,
         routine_entry_pt: vm_address_t,
         routine_number: ::std::os::raw::c_int,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_get_emulation_vector(
         task: task_t,
         vector_start: *mut ::std::os::raw::c_int,
         emulation_vector: *mut emulation_vector_t,
         emulation_vectorCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_set_emulation_vector(
         task: task_t,
         vector_start: ::std::os::raw::c_int,
         emulation_vector: emulation_vector_t,
         emulation_vectorCnt: mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_set_ras_pc(
         target_task: task_t,
         basepc: vm_address_t,
         boundspc: vm_address_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_zone_info(
         target_task: task_inspect_t,
         names: *mut mach_zone_name_array_t,
@@ -20577,24 +20445,20 @@ extern "C" {
         info: *mut task_zone_info_array_t,
         infoCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_assign(
         task: task_t,
         new_set: processor_set_t,
         assign_threads: boolean_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_assign_default(task: task_t, assign_threads: boolean_t) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_get_assignment(
         task: task_inspect_t,
         assigned_set: *mut processor_set_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_set_policy(
         task: task_t,
         pset: processor_set_t,
@@ -20605,165 +20469,139 @@ extern "C" {
         limitCnt: mach_msg_type_number_t,
         change: boolean_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_get_state(
         task: task_read_t,
         flavor: thread_state_flavor_t,
         old_state: thread_state_t,
         old_stateCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_set_state(
         task: task_t,
         flavor: thread_state_flavor_t,
         new_state: thread_state_t,
         new_stateCnt: mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_set_phys_footprint_limit(
         task: task_t,
         new_limit: ::std::os::raw::c_int,
         old_limit: *mut ::std::os::raw::c_int,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_suspend2(
         target_task: task_read_t,
         suspend_token: *mut task_suspension_token_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_resume2(suspend_token: task_suspension_token_t) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_purgable_info(
         task: task_inspect_t,
         stats: *mut task_purgable_info_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_get_mach_voucher(
         task: task_read_t,
         which: mach_voucher_selector_t,
         voucher: *mut ipc_voucher_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_set_mach_voucher(task: task_t, voucher: ipc_voucher_t) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_swap_mach_voucher(
         task: task_t,
         new_voucher: ipc_voucher_t,
         old_voucher: *mut ipc_voucher_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_generate_corpse(
         task: task_read_t,
         corpse_task_port: *mut mach_port_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_map_corpse_info(
         task: task_t,
         corspe_task: task_read_t,
         kcd_addr_begin: *mut vm_address_t,
         kcd_size: *mut u32,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_register_dyld_image_infos(
         task: task_t,
         dyld_images: dyld_kernel_image_info_array_t,
         dyld_imagesCnt: mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_unregister_dyld_image_infos(
         task: task_t,
         dyld_images: dyld_kernel_image_info_array_t,
         dyld_imagesCnt: mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_get_dyld_image_infos(
         task: task_read_t,
         dyld_images: *mut dyld_kernel_image_info_array_t,
         dyld_imagesCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_register_dyld_shared_cache_image_info(
         task: task_t,
         dyld_cache_image: dyld_kernel_image_info_t,
         no_cache: boolean_t,
         private_cache: boolean_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_register_dyld_set_dyld_state(task: task_t, dyld_state: u8) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_register_dyld_get_process_state(
         task: task_t,
         dyld_process_state: *mut dyld_kernel_process_info_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_map_corpse_info_64(
         task: task_t,
         corspe_task: task_read_t,
         kcd_addr_begin: *mut mach_vm_address_t,
         kcd_size: *mut mach_vm_size_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_inspect(
         task: task_inspect_t,
         flavor: task_inspect_flavor_t,
         info_out: task_inspect_info_t,
         info_outCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_get_exc_guard_behavior(
         task: task_inspect_t,
         behavior: *mut task_exc_guard_behavior_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_set_exc_guard_behavior(
         task: task_t,
         behavior: task_exc_guard_behavior_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_dyld_process_info_notify_register(
         target_task: task_read_t,
         notify: mach_port_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_create_identity_token(task: task_t, token: *mut task_id_token_t) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_identity_token_get_task_port(
         token: task_id_token_t,
         flavor: task_flavor_t,
         task_port: *mut mach_port_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_dyld_process_info_notify_deregister(
         target_task: task_read_t,
         notify: mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_get_exception_ports_info(
         port: mach_port_t,
         exception_mask: exception_mask_t,
@@ -20773,25 +20611,21 @@ extern "C" {
         old_behaviors: exception_behavior_array_t,
         old_flavors: exception_flavor_array_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_test_sync_upcall(task: task_t, port: mach_port_t) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_set_corpse_forking_behavior(
         task: task_t,
         behavior: task_corpse_forking_behavior_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_test_async_upcall_propagation(
         task: task_t,
         port: mach_port_t,
         qos: ::std::os::raw::c_int,
         iotier: ::std::os::raw::c_int,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_map_kcdata_object_64(
         task: task_t,
         kcdata_object: kcdata_object_t,
@@ -30159,7 +29993,7 @@ fn bindgen_test_layout___ReplyUnion__task_subsystem() {
         )
     );
 }
-extern "C" {
+unsafe extern "C" {
     pub fn vm_region(
         target_task: vm_map_read_t,
         address: *mut vm_address_t,
@@ -30169,23 +30003,20 @@ extern "C" {
         infoCnt: *mut mach_msg_type_number_t,
         object_name: *mut mach_port_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_allocate(
         target_task: vm_map_t,
         address: *mut vm_address_t,
         size: vm_size_t,
         flags: ::std::os::raw::c_int,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_deallocate(
         target_task: vm_map_t,
         address: vm_address_t,
         size: vm_size_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_protect(
         target_task: vm_map_t,
         address: vm_address_t,
@@ -30193,16 +30024,14 @@ extern "C" {
         set_maximum: boolean_t,
         new_protection: vm_prot_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_inherit(
         target_task: vm_map_t,
         address: vm_address_t,
         size: vm_size_t,
         new_inheritance: vm_inherit_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_read(
         target_task: vm_map_read_t,
         address: vm_address_t,
@@ -30210,31 +30039,27 @@ extern "C" {
         data: *mut vm_offset_t,
         dataCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_read_list(
         target_task: vm_map_read_t,
         data_list: *mut vm_read_entry,
         count: natural_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_write(
         target_task: vm_map_t,
         address: vm_address_t,
         data: vm_offset_t,
         dataCnt: mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_copy(
         target_task: vm_map_t,
         source_address: vm_address_t,
         size: vm_size_t,
         dest_address: vm_address_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_read_overwrite(
         target_task: vm_map_read_t,
         address: vm_address_t,
@@ -30242,24 +30067,21 @@ extern "C" {
         data: vm_address_t,
         outsize: *mut vm_size_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_msync(
         target_task: vm_map_t,
         address: vm_address_t,
         size: vm_size_t,
         sync_flags: vm_sync_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_behavior_set(
         target_task: vm_map_t,
         address: vm_address_t,
         size: vm_size_t,
         new_behavior: vm_behavior_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_map(
         target_task: vm_map_t,
         address: *mut vm_address_t,
@@ -30273,8 +30095,7 @@ extern "C" {
         max_protection: vm_prot_t,
         inheritance: vm_inherit_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_machine_attribute(
         target_task: vm_map_t,
         address: vm_address_t,
@@ -30282,8 +30103,7 @@ extern "C" {
         attribute: vm_machine_attribute_t,
         value: *mut vm_machine_attribute_val_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_remap(
         target_task: vm_map_t,
         target_address: *mut vm_address_t,
@@ -30297,11 +30117,9 @@ extern "C" {
         max_protection: *mut vm_prot_t,
         inheritance: vm_inherit_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_wire(target_task: vm_map_t, must_wire: boolean_t) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_make_memory_entry(
         target_task: vm_map_t,
         size: *mut vm_size_t,
@@ -30310,16 +30128,14 @@ extern "C" {
         object_handle: *mut mem_entry_name_port_t,
         parent_entry: mem_entry_name_port_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_map_page_query(
         target_map: vm_map_read_t,
         offset: vm_offset_t,
         disposition: *mut integer_t,
         ref_count: *mut integer_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_vm_region_info(
         task: vm_map_read_t,
         address: vm_address_t,
@@ -30327,15 +30143,13 @@ extern "C" {
         objects: *mut vm_info_object_array_t,
         objectsCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_mapped_pages_info(
         task: vm_map_read_t,
         pages: *mut page_address_array_t,
         pagesCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_region_recurse(
         target_task: vm_map_read_t,
         address: *mut vm_address_t,
@@ -30344,8 +30158,7 @@ extern "C" {
         info: vm_region_recurse_info_t,
         infoCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_region_recurse_64(
         target_task: vm_map_read_t,
         address: *mut vm_address_t,
@@ -30354,8 +30167,7 @@ extern "C" {
         info: vm_region_recurse_info_t,
         infoCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_vm_region_info_64(
         task: vm_map_read_t,
         address: vm_address_t,
@@ -30363,8 +30175,7 @@ extern "C" {
         objects: *mut vm_info_object_array_t,
         objectsCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_region_64(
         target_task: vm_map_read_t,
         address: *mut vm_address_t,
@@ -30374,8 +30185,7 @@ extern "C" {
         infoCnt: *mut mach_msg_type_number_t,
         object_name: *mut mach_port_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_make_memory_entry_64(
         target_task: vm_map_t,
         size: *mut memory_object_size_t,
@@ -30384,8 +30194,7 @@ extern "C" {
         object_handle: *mut mach_port_t,
         parent_entry: mem_entry_name_port_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_map_64(
         target_task: vm_map_t,
         address: *mut vm_address_t,
@@ -30399,19 +30208,16 @@ extern "C" {
         max_protection: vm_prot_t,
         inheritance: vm_inherit_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_purgable_control(
         target_task: vm_map_t,
         address: vm_address_t,
         control: vm_purgable_t,
         state: *mut ::std::os::raw::c_int,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_map_exec_lockdown(target_task: vm_map_t) -> kern_return_t;
-}
-extern "C" {
+
     pub fn vm_remap_new(
         target_task: vm_map_t,
         target_address: *mut vm_address_t,
@@ -35606,7 +35412,7 @@ fn bindgen_test_layout___ReplyUnion__vm_map_subsystem() {
         )
     );
 }
-extern "C" {
+unsafe extern "C" {
     pub fn mach_port_names(
         task: ipc_space_t,
         names: *mut mach_port_name_array_t,
@@ -35614,58 +35420,49 @@ extern "C" {
         types: *mut mach_port_type_array_t,
         typesCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_type(
         task: ipc_space_t,
         name: mach_port_name_t,
         ptype: *mut mach_port_type_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_rename(
         task: ipc_space_t,
         old_name: mach_port_name_t,
         new_name: mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_allocate_name(
         task: ipc_space_t,
         right: mach_port_right_t,
         name: mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_allocate(
         task: ipc_space_t,
         right: mach_port_right_t,
         name: *mut mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_destroy(task: ipc_space_t, name: mach_port_name_t) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_deallocate(task: ipc_space_t, name: mach_port_name_t) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_get_refs(
         task: ipc_space_t,
         name: mach_port_name_t,
         right: mach_port_right_t,
         refs: *mut mach_port_urefs_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_mod_refs(
         task: ipc_space_t,
         name: mach_port_name_t,
         right: mach_port_right_t,
         delta: mach_port_delta_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_peek(
         task: ipc_space_t,
         name: mach_port_name_t,
@@ -35676,30 +35473,26 @@ extern "C" {
         trailer_infop: mach_msg_trailer_info_t,
         trailer_infopCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_set_mscount(
         task: ipc_space_t,
         name: mach_port_name_t,
         mscount: mach_port_mscount_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_get_set_status(
         task: ipc_space_read_t,
         name: mach_port_name_t,
         members: *mut mach_port_name_array_t,
         membersCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_move_member(
         task: ipc_space_t,
         member: mach_port_name_t,
         after: mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_request_notification(
         task: ipc_space_t,
         name: mach_port_name_t,
@@ -35709,16 +35502,14 @@ extern "C" {
         notifyPoly: mach_msg_type_name_t,
         previous: *mut mach_port_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_insert_right(
         task: ipc_space_t,
         name: mach_port_name_t,
         poly: mach_port_t,
         polyPoly: mach_msg_type_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_extract_right(
         task: ipc_space_t,
         name: mach_port_name_t,
@@ -35726,15 +35517,13 @@ extern "C" {
         poly: *mut mach_port_t,
         polyPoly: *mut mach_msg_type_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_set_seqno(
         task: ipc_space_t,
         name: mach_port_name_t,
         seqno: mach_port_seqno_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_get_attributes(
         task: ipc_space_read_t,
         name: mach_port_name_t,
@@ -35742,8 +35531,7 @@ extern "C" {
         port_info_out: mach_port_info_t,
         port_info_outCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_set_attributes(
         task: ipc_space_t,
         name: mach_port_name_t,
@@ -35751,16 +35539,14 @@ extern "C" {
         port_info: mach_port_info_t,
         port_infoCnt: mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_allocate_qos(
         task: ipc_space_t,
         right: mach_port_right_t,
         qos: *mut mach_port_qos_t,
         name: *mut mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_allocate_full(
         task: ipc_space_t,
         right: mach_port_right_t,
@@ -35768,21 +35554,18 @@ extern "C" {
         qos: *mut mach_port_qos_t,
         name: *mut mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn task_set_port_space(
         task: ipc_space_t,
         table_entries: ::std::os::raw::c_int,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_get_srights(
         task: ipc_space_t,
         name: mach_port_name_t,
         srights: *mut mach_port_rights_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_space_info(
         space: ipc_space_read_t,
         space_info: *mut ipc_info_space_t,
@@ -35791,113 +35574,98 @@ extern "C" {
         tree_info: *mut ipc_info_tree_name_array_t,
         tree_infoCnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_dnrequest_info(
         task: ipc_space_t,
         name: mach_port_name_t,
         dnr_total: *mut ::std::os::raw::c_uint,
         dnr_used: *mut ::std::os::raw::c_uint,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_kernel_object(
         task: ipc_space_read_t,
         name: mach_port_name_t,
         object_type: *mut ::std::os::raw::c_uint,
         object_addr: *mut ::std::os::raw::c_uint,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_insert_member(
         task: ipc_space_t,
         name: mach_port_name_t,
         pset: mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_extract_member(
         task: ipc_space_t,
         name: mach_port_name_t,
         pset: mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_get_context(
         task: ipc_space_read_t,
         name: mach_port_name_t,
         context: *mut mach_port_context_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_set_context(
         task: ipc_space_t,
         name: mach_port_name_t,
         context: mach_port_context_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_kobject(
         task: ipc_space_read_t,
         name: mach_port_name_t,
         object_type: *mut natural_t,
         object_addr: *mut mach_vm_address_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_construct(
         task: ipc_space_t,
         options: mach_port_options_ptr_t,
         context: mach_port_context_t,
         name: *mut mach_port_name_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_destruct(
         task: ipc_space_t,
         name: mach_port_name_t,
         srdelta: mach_port_delta_t,
         guard: mach_port_context_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_guard(
         task: ipc_space_t,
         name: mach_port_name_t,
         guard: mach_port_context_t,
         strict: boolean_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_unguard(
         task: ipc_space_t,
         name: mach_port_name_t,
         guard: mach_port_context_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_space_basic_info(
         task: ipc_space_inspect_t,
         basic_info: *mut ipc_info_space_basic_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_guard_with_flags(
         task: ipc_space_t,
         name: mach_port_name_t,
         guard: mach_port_context_t,
         flags: u64,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_swap_guard(
         task: ipc_space_t,
         name: mach_port_name_t,
         old_guard: mach_port_context_t,
         new_guard: mach_port_context_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_kobject_description(
         task: ipc_space_read_t,
         name: mach_port_name_t,
@@ -35905,23 +35673,20 @@ extern "C" {
         object_addr: *mut mach_vm_address_t,
         description: *mut ::std::os::raw::c_char,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_is_connection_for_service(
         task: ipc_space_t,
         connection_port: mach_port_name_t,
         service_port: mach_port_name_t,
         filter_policy_id: *mut u64,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_get_service_port_info(
         task: ipc_space_read_t,
         name: mach_port_name_t,
         sp_info_out: *mut mach_service_port_info_data_t,
     ) -> kern_return_t;
-}
-extern "C" {
+
     pub fn mach_port_assert_attributes(
         task: ipc_space_t,
         name: mach_port_name_t,

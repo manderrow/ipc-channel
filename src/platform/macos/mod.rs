@@ -12,9 +12,8 @@ use self::mach_sys::{kern_return_t, mach_msg_body_t, mach_msg_header_t, mach_msg
 use self::mach_sys::{mach_msg_ool_descriptor_t, mach_msg_port_descriptor_t, mach_msg_type_name_t};
 use self::mach_sys::{mach_msg_timeout_t, mach_port_limits_t, mach_port_msgcount_t};
 use self::mach_sys::{mach_port_right_t, mach_port_t, mach_task_self_, vm_inherit_t};
-use crate::ipc::{self, IpcMessage};
+use crate::ipc::IpcMessage;
 
-use bincode;
 use lazy_static::lazy_static;
 use libc::{self, c_char, c_uint, c_void, size_t};
 use rand::{self, Rng};
@@ -27,7 +26,7 @@ use std::io;
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::Deref;
-use std::ptr;
+use std::ptr::{self, NonNull};
 use std::slice;
 use std::sync::RwLock;
 use std::time::Duration;
@@ -566,6 +565,7 @@ impl OsIpcSender {
     }
 }
 
+#[derive(Debug)]
 pub enum OsIpcChannel {
     Sender(OsIpcSender),
     Receiver(OsIpcReceiver),
@@ -588,7 +588,7 @@ pub struct OsOpaqueIpcChannel {
 impl Drop for OsOpaqueIpcChannel {
     fn drop(&mut self) {
         // Make sure we don't leak!
-        debug_assert!(self.port == MACH_PORT_NULL);
+        debug_assert_eq!(self.port, MACH_PORT_NULL);
     }
 }
 
@@ -933,7 +933,7 @@ impl OsIpcSharedMemory {
 
 unsafe fn allocate_vm_pages(length: usize) -> *mut u8 {
     let mut address = 0;
-    let result = mach_sys::vm_allocate(mach_task_self(), &mut address, length, 1);
+    let result = unsafe { mach_sys::vm_allocate(mach_task_self(), &mut address, length, 1) };
     if result != KERN_SUCCESS {
         panic!("`vm_allocate()` failed: {}", result);
     }
@@ -941,13 +941,13 @@ unsafe fn allocate_vm_pages(length: usize) -> *mut u8 {
 }
 
 unsafe fn setup_receive_buffer(buffer: &mut [u8], port_name: mach_port_t) {
-    let message = buffer.as_mut_ptr() as *mut mach_msg_header_t;
-    (*message).msgh_local_port = port_name;
-    (*message).msgh_size = buffer.len() as u32
+    let mut message = NonNull::from(&mut *buffer).cast::<mach_msg_header_t>();
+    unsafe { message.as_mut() }.msgh_local_port = port_name;
+    unsafe { message.as_mut() }.msgh_size = buffer.len() as u32
 }
 
 unsafe fn mach_task_self() -> mach_port_t {
-    mach_task_self_
+    unsafe { mach_task_self_ }
 }
 
 fn deallocate_mach_port(port: mach_port_t) {
@@ -958,6 +958,8 @@ fn deallocate_mach_port(port: mach_port_t) {
     let err = unsafe { mach_port_deallocate(mach_task_self(), port) };
     if err != KERN_SUCCESS {
         panic!("mach_port_deallocate({}) failed: {:?}", port, err);
+    } else {
+        println!("mach_port_deallocate({})", port);
     }
 }
 
@@ -1184,12 +1186,6 @@ impl fmt::Display for MachError {
 
 impl StdError for MachError {}
 
-impl From<MachError> for bincode::Error {
-    fn from(mach_error: MachError) -> Self {
-        io::Error::from(mach_error).into()
-    }
-}
-
 impl From<mach_msg_return_t> for MachError {
     fn from(code: mach_msg_return_t) -> MachError {
         match code {
@@ -1240,25 +1236,6 @@ impl From<mach_msg_return_t> for MachError {
 impl From<KernelError> for MachError {
     fn from(kernel_error: KernelError) -> MachError {
         MachError::Kernel(kernel_error)
-    }
-}
-
-impl From<MachError> for ipc::TryRecvError {
-    fn from(error: MachError) -> Self {
-        match error {
-            MachError::NotifyNoSenders => ipc::TryRecvError::IpcError(ipc::IpcError::Disconnected),
-            MachError::RcvTimedOut => ipc::TryRecvError::Empty,
-            e => ipc::TryRecvError::IpcError(ipc::IpcError::Io(io::Error::from(e))),
-        }
-    }
-}
-
-impl From<MachError> for ipc::IpcError {
-    fn from(error: MachError) -> Self {
-        match error {
-            MachError::NotifyNoSenders => ipc::IpcError::Disconnected,
-            e => ipc::IpcError::Io(io::Error::from(e)),
-        }
     }
 }
 
@@ -1320,7 +1297,7 @@ impl From<MachError> for io::Error {
     }
 }
 
-extern "C" {
+unsafe extern "C" {
     fn bootstrap_register2(
         bp: mach_port_t,
         service_name: name_t,

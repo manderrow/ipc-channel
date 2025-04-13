@@ -13,15 +13,17 @@
 //! message to a crossbeam `Sender<T>` or `Receiver<T>`. You should use the global `ROUTER` to
 //! access the `RouterProxy` methods (via `ROUTER`'s `Deref` for `RouterProxy`.
 
-use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::thread;
 
-use crate::ipc::OpaqueIpcReceiver;
-use crate::ipc::{self, IpcMessage, IpcReceiver, IpcReceiverSet, IpcSelectionResult, IpcSender};
+use bincode::{Decode, Encode};
 use crossbeam_channel::{self, Receiver, Sender};
-use serde::{Deserialize, Serialize};
+use lazy_static::lazy_static;
+
+use crate::error::DecodeError;
+use crate::ipc::{self, IpcMessage, IpcReceiver, IpcReceiverSet, IpcSelectionResult, IpcSender};
+use crate::ipc::{Context, OpaqueIpcReceiver};
 
 lazy_static! {
     /// Global object wrapping a `RouterProxy`.
@@ -83,7 +85,7 @@ impl RouterProxy {
     /// that the `receiver` and the `callback` use the same message type.
     pub fn add_typed_route<T>(&self, receiver: IpcReceiver<T>, mut callback: TypedRouterHandler<T>)
     where
-        T: Serialize + for<'de> Deserialize<'de> + 'static,
+        T: Decode<Context> + Encode + 'static,
     {
         // Before passing the message on to the callback, turn it into the appropriate type
         let modified_callback = move |msg: IpcMessage| {
@@ -125,7 +127,7 @@ impl RouterProxy {
         ipc_receiver: IpcReceiver<T>,
         crossbeam_sender: Sender<T>,
     ) where
-        T: for<'de> Deserialize<'de> + Serialize + Send + 'static,
+        T: Decode<Context> + Encode + Send + 'static,
     {
         self.add_typed_route(
             ipc_receiver,
@@ -140,7 +142,7 @@ impl RouterProxy {
         ipc_receiver: IpcReceiver<T>,
     ) -> Receiver<T>
     where
-        T: for<'de> Deserialize<'de> + Serialize + Send + 'static,
+        T: Decode<Context> + Encode + Send + 'static,
     {
         let (crossbeam_sender, crossbeam_receiver) = crossbeam_channel::unbounded();
         self.route_ipc_receiver_to_crossbeam_sender(ipc_receiver, crossbeam_sender);
@@ -240,4 +242,4 @@ enum RouterMsg {
 pub type RouterHandler = Box<dyn FnMut(IpcMessage) + Send>;
 
 /// Like [RouterHandler] but includes the type that will be passed to the callback
-pub type TypedRouterHandler<T> = Box<dyn FnMut(Result<T, bincode::Error>) + Send>;
+pub type TypedRouterHandler<T> = Box<dyn FnMut(Result<T, DecodeError>) + Send>;

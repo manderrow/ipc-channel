@@ -28,6 +28,8 @@ mod unix;
 ))]
 mod os {
     pub use super::unix::*;
+
+    pub use super::UnixError as OsError;
 }
 
 #[cfg(all(not(feature = "force-inprocess"), target_os = "macos"))]
@@ -35,6 +37,8 @@ mod macos;
 #[cfg(all(not(feature = "force-inprocess"), target_os = "macos"))]
 mod os {
     pub use super::macos::*;
+
+    pub use MachError as OsError;
 }
 
 #[cfg(all(not(feature = "force-inprocess"), target_os = "windows"))]
@@ -42,6 +46,8 @@ mod windows;
 #[cfg(all(not(feature = "force-inprocess"), target_os = "windows"))]
 mod os {
     pub use super::windows::*;
+
+    pub use WindowsError as OsError;
 }
 
 #[cfg(any(
@@ -61,11 +67,14 @@ mod inprocess;
 ))]
 mod os {
     pub use super::inprocess::*;
+
+    pub use super::ChannelError as OsError;
 }
 
-pub use self::os::{channel, OsOpaqueIpcChannel};
-pub use self::os::{OsIpcChannel, OsIpcOneShotServer, OsIpcReceiver, OsIpcReceiverSet};
-pub use self::os::{OsIpcSelectionResult, OsIpcSender, OsIpcSharedMemory};
+pub use self::os::{
+    OsError, OsIpcChannel, OsIpcOneShotServer, OsIpcReceiver, OsIpcReceiverSet,
+    OsIpcSelectionResult, OsIpcSender, OsIpcSharedMemory, OsOpaqueIpcChannel, channel,
+};
 
 #[cfg(test)]
 mod test;

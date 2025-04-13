@@ -7,88 +7,48 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use crate::error::{DecodeError, RecvError, SendError, TryRecvError};
 use crate::platform::{self, OsIpcChannel, OsIpcReceiver, OsIpcReceiverSet, OsIpcSender};
 use crate::platform::{
     OsIpcOneShotServer, OsIpcSelectionResult, OsIpcSharedMemory, OsOpaqueIpcChannel,
 };
 
-use bincode;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use bincode::{Decode, Encode};
 use std::cell::RefCell;
 use std::cmp::min;
-use std::error::Error as StdError;
 use std::fmt::{self, Debug, Formatter};
 use std::io;
 use std::marker::PhantomData;
-use std::mem;
 use std::ops::Deref;
 use std::time::Duration;
 
+const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
+
+enum SerContext {
+    Size {
+        channels: usize,
+        shared_memory_regions: usize,
+    },
+    Encode {
+        channels: Vec<OsIpcChannel>,
+        shared_memory_regions: Vec<OsIpcSharedMemory>,
+    },
+}
+
+impl SerContext {
+    const DEFAULT_SIZE: Self = Self::Size {
+        channels: 0,
+        shared_memory_regions: 0,
+    };
+
+    const DEFAULT_ENCODE: Self = Self::Encode {
+        channels: Vec::new(),
+        shared_memory_regions: Vec::new(),
+    };
+}
+
 thread_local! {
-    static OS_IPC_CHANNELS_FOR_DESERIALIZATION: RefCell<Vec<OsOpaqueIpcChannel>> =
-        const { RefCell::new(Vec::new()) }
-}
-thread_local! {
-    static OS_IPC_SHARED_MEMORY_REGIONS_FOR_DESERIALIZATION:
-        RefCell<Vec<Option<OsIpcSharedMemory>>> = const { RefCell::new(Vec::new()) }
-}
-thread_local! {
-    static OS_IPC_CHANNELS_FOR_SERIALIZATION: RefCell<Vec<OsIpcChannel>> = const { RefCell::new(Vec::new()) }
-}
-thread_local! {
-    static OS_IPC_SHARED_MEMORY_REGIONS_FOR_SERIALIZATION: RefCell<Vec<OsIpcSharedMemory>> =
-        const { RefCell::new(Vec::new()) }
-}
-
-#[derive(Debug)]
-pub enum IpcError {
-    Bincode(bincode::Error),
-    Io(io::Error),
-    Disconnected,
-}
-
-impl fmt::Display for IpcError {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            IpcError::Bincode(ref err) => write!(fmt, "bincode error: {}", err),
-            IpcError::Io(ref err) => write!(fmt, "io error: {}", err),
-            IpcError::Disconnected => write!(fmt, "disconnected"),
-        }
-    }
-}
-
-impl StdError for IpcError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match *self {
-            IpcError::Bincode(ref err) => Some(err),
-            IpcError::Io(ref err) => Some(err),
-            IpcError::Disconnected => None,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum TryRecvError {
-    IpcError(IpcError),
-    Empty,
-}
-
-impl fmt::Display for TryRecvError {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            TryRecvError::IpcError(ref err) => write!(fmt, "ipc error: {}", err),
-            TryRecvError::Empty => write!(fmt, "empty"),
-        }
-    }
-}
-
-impl StdError for TryRecvError {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        match *self {
-            TryRecvError::IpcError(ref err) => Some(err),
-            TryRecvError::Empty => None,
-        }
-    }
+    static SER_CONTEXT: RefCell<SerContext> = const { RefCell::new(SerContext::DEFAULT_SIZE) }
 }
 
 /// Create a connected [IpcSender] and [IpcReceiver] that
@@ -123,7 +83,7 @@ impl StdError for TryRecvError {
 /// [IpcReceiver]: struct.IpcReceiver.html
 pub fn channel<T>() -> Result<(IpcSender<T>, IpcReceiver<T>), io::Error>
 where
-    T: for<'de> Deserialize<'de> + Serialize,
+    T: Decode<Context> + Encode,
 {
     let (os_sender, os_receiver) = platform::channel()?;
     let ipc_receiver = IpcReceiver {
@@ -247,11 +207,11 @@ pub struct IpcReceiver<T> {
 
 impl<T> IpcReceiver<T>
 where
-    T: for<'de> Deserialize<'de> + Serialize,
+    T: Decode<Context>,
 {
     /// Blocking receive.
-    pub fn recv(&self) -> Result<T, IpcError> {
-        self.os_receiver.recv()?.to().map_err(IpcError::Bincode)
+    pub fn recv(&self) -> Result<T, RecvError> {
+        self.os_receiver.recv()?.to().map_err(RecvError::from)
     }
 
     /// Non-blocking receive
@@ -259,8 +219,8 @@ where
         self.os_receiver
             .try_recv()?
             .to()
-            .map_err(IpcError::Bincode)
-            .map_err(TryRecvError::IpcError)
+            .map_err(RecvError::from)
+            .map_err(TryRecvError::Recv)
     }
 
     /// Blocks for up to the specified duration attempting to receive a message.
@@ -273,10 +233,12 @@ where
         self.os_receiver
             .try_recv_timeout(duration)?
             .to()
-            .map_err(IpcError::Bincode)
-            .map_err(TryRecvError::IpcError)
+            .map_err(RecvError::from)
+            .map_err(TryRecvError::Recv)
     }
+}
 
+impl<T> IpcReceiver<T> {
     /// Erase the type of the channel.
     ///
     /// Useful for adding routes to a `RouterProxy`.
@@ -287,25 +249,24 @@ where
     }
 }
 
-impl<'de, T> Deserialize<'de> for IpcReceiver<T> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let os_receiver = deserialize_os_ipc_receiver(deserializer)?;
-        Ok(IpcReceiver {
+impl<'de, T> Decode<Context> for IpcReceiver<T> {
+    fn decode<D: bincode::de::Decoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        let os_receiver = deserialize_os_ipc_receiver(decoder)?;
+        Ok(Self {
             os_receiver,
             phantom: PhantomData,
         })
     }
 }
 
-impl<T> Serialize for IpcReceiver<T> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serialize_os_ipc_receiver(&self.os_receiver, serializer)
+impl<T> Encode for IpcReceiver<T> {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
+        serialize_os_ipc_receiver(&self.os_receiver, encoder)
     }
 }
 
@@ -335,10 +296,7 @@ pub struct IpcSender<T> {
     phantom: PhantomData<T>,
 }
 
-impl<T> Clone for IpcSender<T>
-where
-    T: Serialize,
-{
+impl<T> Clone for IpcSender<T> {
     fn clone(&self) -> IpcSender<T> {
         IpcSender {
             os_sender: self.os_sender.clone(),
@@ -349,7 +307,7 @@ where
 
 impl<T> IpcSender<T>
 where
-    T: Serialize,
+    T: bincode::enc::Encode,
 {
     /// Create an [IpcSender] connected to a previously defined [IpcOneShotServer].
     ///
@@ -367,36 +325,27 @@ where
     }
 
     /// Send data across the channel to the receiver.
-    pub fn send(&self, data: T) -> Result<(), bincode::Error> {
-        let mut bytes = Vec::with_capacity(4096);
-        OS_IPC_CHANNELS_FOR_SERIALIZATION.with(|os_ipc_channels_for_serialization| {
-            OS_IPC_SHARED_MEMORY_REGIONS_FOR_SERIALIZATION.with(
-                |os_ipc_shared_memory_regions_for_serialization| {
-                    let old_os_ipc_channels =
-                        mem::take(&mut *os_ipc_channels_for_serialization.borrow_mut());
-                    let old_os_ipc_shared_memory_regions = mem::take(
-                        &mut *os_ipc_shared_memory_regions_for_serialization.borrow_mut(),
-                    );
-                    let os_ipc_shared_memory_regions;
-                    let os_ipc_channels;
-                    {
-                        bincode::serialize_into(&mut bytes, &data)?;
-                        os_ipc_channels = mem::replace(
-                            &mut *os_ipc_channels_for_serialization.borrow_mut(),
-                            old_os_ipc_channels,
-                        );
-                        os_ipc_shared_memory_regions = mem::replace(
-                            &mut *os_ipc_shared_memory_regions_for_serialization.borrow_mut(),
-                            old_os_ipc_shared_memory_regions,
-                        );
-                    };
-                    Ok(self.os_sender.send(
-                        &bytes[..],
-                        os_ipc_channels,
-                        os_ipc_shared_memory_regions,
-                    )?)
-                },
-            )
+    pub fn send(&self, data: T) -> Result<(), SendError> {
+        SER_CONTEXT.with(|context| {
+            let old_context = context.replace(SerContext::DEFAULT_SIZE);
+            let size = {
+                let mut size_writer = bincode::enc::write::SizeWriter::default();
+                bincode::encode_into_writer(&data, &mut size_writer, BINCODE_CONFIG)?;
+                size_writer.bytes_written
+            };
+            _ = context.replace(SerContext::DEFAULT_ENCODE);
+            let mut bytes = Vec::with_capacity(size);
+            bincode::encode_into_std_write(&data, &mut bytes, BINCODE_CONFIG)?;
+            let SerContext::Encode {
+                channels,
+                shared_memory_regions,
+            } = context.replace(old_context)
+            else {
+                unreachable!()
+            };
+            Ok(self
+                .os_sender
+                .send(&bytes[..], channels, shared_memory_regions)?)
         })
     }
 
@@ -407,25 +356,24 @@ where
     }
 }
 
-impl<'de, T> Deserialize<'de> for IpcSender<T> {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let os_sender = deserialize_os_ipc_sender(deserializer)?;
-        Ok(IpcSender {
+impl<'de, T> Decode<Context> for IpcSender<T> {
+    fn decode<D: bincode::de::Decoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        let os_sender = deserialize_os_ipc_sender(decoder)?;
+        Ok(Self {
             os_sender,
             phantom: PhantomData,
         })
     }
 }
 
-impl<T> Serialize for IpcSender<T> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serialize_os_ipc_sender(&self.os_sender, serializer)
+impl<T> Encode for IpcSender<T> {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
+        serialize_os_ipc_sender(&self.os_sender, encoder)
     }
 }
 
@@ -483,10 +431,7 @@ impl IpcReceiverSet {
 
     /// Add and consume the [IpcReceiver] to the set of receivers to be polled.
     /// [IpcReceiver]: struct.IpcReceiver.html
-    pub fn add<T>(&mut self, receiver: IpcReceiver<T>) -> Result<u64, io::Error>
-    where
-        T: for<'de> Deserialize<'de> + Serialize,
-    {
+    pub fn add<T>(&mut self, receiver: IpcReceiver<T>) -> Result<u64, io::Error> {
         Ok(self.os_receiver_set.add(receiver.os_receiver)?)
     }
 
@@ -560,59 +505,72 @@ impl IpcSharedMemory {
     #[inline]
     pub unsafe fn deref_mut(&mut self) -> &mut [u8] {
         if let Some(os_shared_memory) = &mut self.os_shared_memory {
-            os_shared_memory.deref_mut()
+            unsafe { os_shared_memory.deref_mut() }
         } else {
             &mut []
         }
     }
 }
 
-impl<'de> Deserialize<'de> for IpcSharedMemory {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let index: usize = Deserialize::deserialize(deserializer)?;
+impl<'de> Decode<Context> for IpcSharedMemory {
+    fn decode<D: bincode::de::Decoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        let index: usize = Decode::decode(decoder)?;
         if index == usize::MAX {
             return Ok(IpcSharedMemory::empty());
         }
 
-        let os_shared_memory = OS_IPC_SHARED_MEMORY_REGIONS_FOR_DESERIALIZATION.with(
-            |os_ipc_shared_memory_regions_for_deserialization| {
-                // FIXME(pcwalton): This could panic if the data was corrupt and the index was out
-                // of bounds. We should return an `Err` result instead.
-                os_ipc_shared_memory_regions_for_deserialization.borrow_mut()[index]
-                    .take()
-                    .unwrap()
-            },
-        );
+        let os_shared_memory = decoder
+            .context()
+            .os_ipc_shared_memory_regions
+            .get_mut(index)
+            .ok_or_else(|| {
+                bincode::error::DecodeError::Other("OsIpcSharedMemory index out of bounds")
+            })?
+            .take()
+            .ok_or_else(|| {
+                bincode::error::DecodeError::Other("OsIpcSharedMemory index already used")
+            })?;
         Ok(IpcSharedMemory {
             os_shared_memory: Some(os_shared_memory),
         })
     }
 }
 
-impl Serialize for IpcSharedMemory {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
+impl Encode for IpcSharedMemory {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
         if let Some(os_shared_memory) = &self.os_shared_memory {
-            let index = OS_IPC_SHARED_MEMORY_REGIONS_FOR_SERIALIZATION.with(
-                |os_ipc_shared_memory_regions_for_serialization| {
-                    let mut os_ipc_shared_memory_regions_for_serialization =
-                        os_ipc_shared_memory_regions_for_serialization.borrow_mut();
-                    let index = os_ipc_shared_memory_regions_for_serialization.len();
-                    os_ipc_shared_memory_regions_for_serialization.push(os_shared_memory.clone());
-                    index
-                },
-            );
+            let index = SER_CONTEXT.with(|context| {
+                let mut context = context.borrow_mut();
+                match &mut *context {
+                    SerContext::Size {
+                        shared_memory_regions,
+                        ..
+                    } => {
+                        let index = *shared_memory_regions;
+                        *shared_memory_regions += 1;
+                        index
+                    },
+                    SerContext::Encode {
+                        shared_memory_regions,
+                        ..
+                    } => {
+                        let index = shared_memory_regions.len();
+                        shared_memory_regions.push(os_shared_memory.clone());
+                        index
+                    },
+                }
+            });
             debug_assert!(index < usize::MAX);
             index
         } else {
             usize::MAX
         }
-        .serialize(serializer)
+        .encode(encoder)
     }
 }
 
@@ -713,6 +671,11 @@ impl Debug for IpcMessage {
     }
 }
 
+pub struct Context {
+    os_ipc_channels: Vec<OsOpaqueIpcChannel>,
+    os_ipc_shared_memory_regions: Vec<Option<OsIpcSharedMemory>>,
+}
+
 impl IpcMessage {
     pub(crate) fn new(
         data: Vec<u8>,
@@ -727,37 +690,30 @@ impl IpcMessage {
     }
 
     /// Deserialize the raw data in the contained message into the inferred type.
-    pub fn to<T>(mut self) -> Result<T, bincode::Error>
+    pub fn to<T>(self) -> Result<T, DecodeError>
     where
-        T: for<'de> Deserialize<'de> + Serialize,
+        T: Decode<Context>,
     {
-        OS_IPC_CHANNELS_FOR_DESERIALIZATION.with(|os_ipc_channels_for_deserialization| {
-            OS_IPC_SHARED_MEMORY_REGIONS_FOR_DESERIALIZATION.with(
-                |os_ipc_shared_memory_regions_for_deserialization| {
-                    mem::swap(
-                        &mut *os_ipc_channels_for_deserialization.borrow_mut(),
-                        &mut self.os_ipc_channels,
-                    );
-                    let old_ipc_shared_memory_regions_for_deserialization = mem::replace(
-                        &mut *os_ipc_shared_memory_regions_for_deserialization.borrow_mut(),
-                        self.os_ipc_shared_memory_regions
-                            .into_iter()
-                            .map(Some)
-                            .collect(),
-                    );
-                    let result = bincode::deserialize(&self.data[..]);
-                    *os_ipc_shared_memory_regions_for_deserialization.borrow_mut() =
-                        old_ipc_shared_memory_regions_for_deserialization;
-                    mem::swap(
-                        &mut *os_ipc_channels_for_deserialization.borrow_mut(),
-                        &mut self.os_ipc_channels,
-                    );
-                    /* Error check comes after doing cleanup,
-                     * since we need the cleanup both in the success and the error cases. */
-                    result
-                },
-            )
-        })
+        let os_ipc_shared_memory_regions = self
+            .os_ipc_shared_memory_regions
+            .into_iter()
+            .map(Some)
+            .collect::<Vec<_>>();
+        let result = bincode::decode_from_slice_with_context(
+            &self.data[..],
+            BINCODE_CONFIG,
+            Context {
+                os_ipc_channels: self.os_ipc_channels,
+                os_ipc_shared_memory_regions: os_ipc_shared_memory_regions,
+            },
+        );
+        /* Error check comes after doing cleanup,
+         * since we need the cleanup both in the success and the error cases. */
+        let (t, n) = result?;
+        if n != self.data.len() {
+            return Err(DecodeError::TrailingBytes);
+        }
+        Ok(t)
     }
 }
 
@@ -767,10 +723,7 @@ pub struct OpaqueIpcSender {
 }
 
 impl OpaqueIpcSender {
-    pub fn to<T>(self) -> IpcSender<T>
-    where
-        T: Serialize,
-    {
+    pub fn to<T>(self) -> IpcSender<T> {
         IpcSender {
             os_sender: self.os_sender,
             phantom: PhantomData,
@@ -778,22 +731,21 @@ impl OpaqueIpcSender {
     }
 }
 
-impl<'de> Deserialize<'de> for OpaqueIpcSender {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let os_sender = deserialize_os_ipc_sender(deserializer)?;
-        Ok(OpaqueIpcSender { os_sender })
+impl<'de> Decode<Context> for OpaqueIpcSender {
+    fn decode<D: bincode::de::Decoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        let os_sender = deserialize_os_ipc_sender(decoder)?;
+        Ok(Self { os_sender })
     }
 }
 
-impl Serialize for OpaqueIpcSender {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serialize_os_ipc_sender(&self.os_sender, serializer)
+impl Encode for OpaqueIpcSender {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
+        serialize_os_ipc_sender(&self.os_sender, encoder)
     }
 }
 
@@ -803,10 +755,7 @@ pub struct OpaqueIpcReceiver {
 }
 
 impl OpaqueIpcReceiver {
-    pub fn to<'de, T>(self) -> IpcReceiver<T>
-    where
-        T: Deserialize<'de> + Serialize,
-    {
+    pub fn to<'de, T>(self) -> IpcReceiver<T> {
         IpcReceiver {
             os_receiver: self.os_receiver,
             phantom: PhantomData,
@@ -814,22 +763,21 @@ impl OpaqueIpcReceiver {
     }
 }
 
-impl<'de> Deserialize<'de> for OpaqueIpcReceiver {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let os_receiver = deserialize_os_ipc_receiver(deserializer)?;
-        Ok(OpaqueIpcReceiver { os_receiver })
+impl<'de> Decode<Context> for OpaqueIpcReceiver {
+    fn decode<D: bincode::de::Decoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        let os_receiver = deserialize_os_ipc_receiver(decoder)?;
+        Ok(Self { os_receiver })
     }
 }
 
-impl Serialize for OpaqueIpcReceiver {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serialize_os_ipc_receiver(&self.os_receiver, serializer)
+impl Encode for OpaqueIpcReceiver {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
+        serialize_os_ipc_receiver(&self.os_receiver, encoder)
     }
 }
 
@@ -874,7 +822,7 @@ pub struct IpcOneShotServer<T> {
 
 impl<T> IpcOneShotServer<T>
 where
-    T: for<'de> Deserialize<'de> + Serialize,
+    T: Decode<Context> + Encode,
 {
     pub fn new() -> Result<(IpcOneShotServer<T>, String), io::Error> {
         let (os_server, name) = OsIpcOneShotServer::new()?;
@@ -887,7 +835,7 @@ where
         ))
     }
 
-    pub fn accept(self) -> Result<(IpcReceiver<T>, T), bincode::Error> {
+    pub fn accept(self) -> Result<(IpcReceiver<T>, T), RecvError> {
         let (os_receiver, ipc_message) = self.os_server.accept()?;
         Ok((
             IpcReceiver {
@@ -908,7 +856,7 @@ pub struct IpcBytesReceiver {
 impl IpcBytesReceiver {
     /// Blocking receive.
     #[inline]
-    pub fn recv(&self) -> Result<Vec<u8>, IpcError> {
+    pub fn recv(&self) -> Result<Vec<u8>, RecvError> {
         match self.os_receiver.recv() {
             Ok(ipc_message) => Ok(ipc_message.data),
             Err(err) => Err(err.into()),
@@ -924,22 +872,21 @@ impl IpcBytesReceiver {
     }
 }
 
-impl<'de> Deserialize<'de> for IpcBytesReceiver {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let os_receiver = deserialize_os_ipc_receiver(deserializer)?;
+impl<'de> Decode<Context> for IpcBytesReceiver {
+    fn decode<D: bincode::de::Decoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        let os_receiver = deserialize_os_ipc_receiver(decoder)?;
         Ok(IpcBytesReceiver { os_receiver })
     }
 }
 
-impl Serialize for IpcBytesReceiver {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serialize_os_ipc_receiver(&self.os_receiver, serializer)
+impl Encode for IpcBytesReceiver {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
+        serialize_os_ipc_receiver(&self.os_receiver, encoder)
     }
 }
 
@@ -957,22 +904,21 @@ impl Clone for IpcBytesSender {
     }
 }
 
-impl<'de> Deserialize<'de> for IpcBytesSender {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let os_sender = deserialize_os_ipc_sender(deserializer)?;
-        Ok(IpcBytesSender { os_sender })
+impl<'de> Decode<Context> for IpcBytesSender {
+    fn decode<D: bincode::de::Decoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        let os_sender = deserialize_os_ipc_sender(decoder)?;
+        Ok(Self { os_sender })
     }
 }
 
-impl Serialize for IpcBytesSender {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serialize_os_ipc_sender(&self.os_sender, serializer)
+impl Encode for IpcBytesSender {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
+        serialize_os_ipc_sender(&self.os_sender, encoder)
     }
 }
 
@@ -985,56 +931,84 @@ impl IpcBytesSender {
     }
 }
 
-fn serialize_os_ipc_sender<S>(os_ipc_sender: &OsIpcSender, serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_os_ipc_sender<S>(
+    sender: &OsIpcSender,
+    serializer: &mut S,
+) -> Result<(), bincode::error::EncodeError>
 where
-    S: Serializer,
+    S: bincode::enc::Encoder,
 {
-    let index = OS_IPC_CHANNELS_FOR_SERIALIZATION.with(|os_ipc_channels_for_serialization| {
-        let mut os_ipc_channels_for_serialization = os_ipc_channels_for_serialization.borrow_mut();
-        let index = os_ipc_channels_for_serialization.len();
-        os_ipc_channels_for_serialization.push(OsIpcChannel::Sender(os_ipc_sender.clone()));
-        index
+    let index = SER_CONTEXT.with(|context| {
+        let mut context = context.borrow_mut();
+        match &mut *context {
+            SerContext::Size { channels, .. } => {
+                let index = *channels;
+                *channels += 1;
+                index
+            },
+            SerContext::Encode { channels, .. } => {
+                let index = channels.len();
+                channels.push(OsIpcChannel::Sender(sender.clone()));
+                index
+            },
+        }
     });
-    index.serialize(serializer)
+    index.encode(serializer)
 }
 
-fn deserialize_os_ipc_sender<'de, D>(deserializer: D) -> Result<OsIpcSender, D::Error>
+fn deserialize_os_ipc_sender<D>(
+    deserializer: &mut D,
+) -> Result<OsIpcSender, bincode::error::DecodeError>
 where
-    D: Deserializer<'de>,
+    D: bincode::de::Decoder<Context = Context>,
 {
-    let index: usize = Deserialize::deserialize(deserializer)?;
-    OS_IPC_CHANNELS_FOR_DESERIALIZATION.with(|os_ipc_channels_for_deserialization| {
-        // FIXME(pcwalton): This could panic if the data was corrupt and the index was out of
-        // bounds. We should return an `Err` result instead.
-        Ok(os_ipc_channels_for_deserialization.borrow_mut()[index].to_sender())
-    })
+    let index: usize = Decode::decode(deserializer)?;
+
+    deserializer
+        .context()
+        .os_ipc_channels
+        .get_mut(index)
+        .ok_or_else(|| bincode::error::DecodeError::Other("OsIpcSender index out of bounds"))
+        .map(|channel| channel.to_sender())
 }
 
 fn serialize_os_ipc_receiver<S>(
-    os_receiver: &OsIpcReceiver,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
+    receiver: &OsIpcReceiver,
+    serializer: &mut S,
+) -> Result<(), bincode::error::EncodeError>
 where
-    S: Serializer,
+    S: bincode::enc::Encoder,
 {
-    let index = OS_IPC_CHANNELS_FOR_SERIALIZATION.with(|os_ipc_channels_for_serialization| {
-        let mut os_ipc_channels_for_serialization = os_ipc_channels_for_serialization.borrow_mut();
-        let index = os_ipc_channels_for_serialization.len();
-        os_ipc_channels_for_serialization.push(OsIpcChannel::Receiver(os_receiver.consume()));
-        index
+    let index = SER_CONTEXT.with(|context| {
+        let mut context = context.borrow_mut();
+        match &mut *context {
+            SerContext::Size { channels, .. } => {
+                let index = *channels;
+                *channels += 1;
+                index
+            },
+            SerContext::Encode { channels, .. } => {
+                let index = channels.len();
+                channels.push(OsIpcChannel::Receiver(receiver.consume()));
+                index
+            },
+        }
     });
-    index.serialize(serializer)
+    index.encode(serializer)
 }
 
-fn deserialize_os_ipc_receiver<'de, D>(deserializer: D) -> Result<OsIpcReceiver, D::Error>
+fn deserialize_os_ipc_receiver<D>(
+    deserializer: &mut D,
+) -> Result<OsIpcReceiver, bincode::error::DecodeError>
 where
-    D: Deserializer<'de>,
+    D: bincode::de::Decoder<Context = Context>,
 {
-    let index: usize = Deserialize::deserialize(deserializer)?;
+    let index: usize = Decode::decode(deserializer)?;
 
-    OS_IPC_CHANNELS_FOR_DESERIALIZATION.with(|os_ipc_channels_for_deserialization| {
-        // FIXME(pcwalton): This could panic if the data was corrupt and the index was out
-        // of bounds. We should return an `Err` result instead.
-        Ok(os_ipc_channels_for_deserialization.borrow_mut()[index].to_receiver())
-    })
+    deserializer
+        .context()
+        .os_ipc_channels
+        .get_mut(index)
+        .ok_or_else(|| bincode::error::DecodeError::Other("OsIpcReceiver index out of bounds"))
+        .map(|channel| channel.to_receiver())
 }

@@ -16,27 +16,13 @@
 //! The `inprocess` backend is a dummy back-end, that behaves like the real ones,
 //! but doesn't actually work between processes.
 
-#[cfg(any(
-    feature = "force-inprocess",
-    target_os = "windows",
-    target_os = "android",
-    target_os = "ios"
-))]
-#[cfg(all(not(feature = "force-inprocess"), target_os = "linux"))]
-#[cfg(feature = "async")]
-use futures;
-
 #[cfg(feature = "async")]
 pub mod asynch;
 
-#[cfg(all(not(feature = "force-inprocess"), target_os = "windows"))]
-extern crate windows;
-
+pub mod error;
 pub mod ipc;
 pub mod platform;
 pub mod router;
 
 #[cfg(test)]
 mod test;
-
-pub use bincode::{Error, ErrorKind};
