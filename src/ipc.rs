@@ -767,9 +767,9 @@ pub struct OpaqueIpcSender {
 }
 
 impl OpaqueIpcSender {
-    pub fn to<'de, T>(self) -> IpcSender<T>
+    pub fn to<T>(self) -> IpcSender<T>
     where
-        T: Deserialize<'de> + Serialize,
+        T: Serialize,
     {
         IpcSender {
             os_sender: self.os_sender,
