@@ -1,6 +1,8 @@
 use std::error::Error as StdError;
 use std::{fmt, io};
 
+pub use crate::platform::OsError;
+
 #[derive(Debug)]
 pub enum DecodeError {
     Bincode(bincode::error::DecodeError),
@@ -36,7 +38,7 @@ pub enum RecvError {
     Bincode(bincode::error::DecodeError),
     TrailingBytes,
     Io(io::Error),
-    Os(crate::platform::OsError),
+    Os(OsError),
     Disconnected,
 }
 
@@ -79,13 +81,24 @@ impl From<DecodeError> for RecvError {
     }
 }
 
-impl From<crate::platform::OsError> for RecvError {
-    fn from(value: crate::platform::OsError) -> Self {
+impl From<OsError> for RecvError {
+    fn from(value: OsError) -> Self {
         #[cfg(not(feature = "force-inprocess"))]
         {
             #[cfg(target_os = "macos")]
             {
-                if matches!(value, crate::platform::OsError::NotifyNoSenders) {
+                if matches!(value, OsError::NotifyNoSenders) {
+                    return Self::Disconnected;
+                }
+            }
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "openbsd",
+                target_os = "freebsd",
+                target_os = "illumos",
+            ))]
+            {
+                if matches!(value, OsError::ChannelClosed) {
                     return Self::Disconnected;
                 }
             }
@@ -118,13 +131,24 @@ impl StdError for TryRecvError {
     }
 }
 
-impl From<crate::platform::OsError> for TryRecvError {
-    fn from(value: crate::platform::OsError) -> Self {
+impl From<OsError> for TryRecvError {
+    fn from(value: OsError) -> Self {
         #[cfg(not(feature = "force-inprocess"))]
         {
             #[cfg(target_os = "macos")]
             {
-                if matches!(value, crate::platform::OsError::RcvTimedOut) {
+                if matches!(value, OsError::RcvTimedOut) {
+                    return Self::Empty;
+                }
+            }
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "openbsd",
+                target_os = "freebsd",
+                target_os = "illumos",
+            ))]
+            {
+                if matches!(value, OsError::Empty) {
                     return Self::Empty;
                 }
             }

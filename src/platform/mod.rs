@@ -29,7 +29,7 @@ mod unix;
 mod os {
     pub use super::unix::*;
 
-    pub use super::UnixError as OsError;
+    pub use UnixError as OsError;
 }
 
 #[cfg(all(not(feature = "force-inprocess"), target_os = "macos"))]

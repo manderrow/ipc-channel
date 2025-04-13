@@ -7,18 +7,16 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use crate::ipc::{self, IpcMessage};
-use bincode;
+use crate::ipc::IpcMessage;
 use fnv::FnvHasher;
 use lazy_static::lazy_static;
 use libc::{
-    self, cmsghdr, linger, CMSG_DATA, CMSG_LEN, CMSG_SPACE, MAP_FAILED, MAP_SHARED, PROT_READ,
-    PROT_WRITE, SOCK_SEQPACKET, SOL_SOCKET,
+    self, CMSG_DATA, CMSG_LEN, CMSG_SPACE, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE,
+    SOCK_SEQPACKET, SOL_SOCKET, cmsghdr, linger,
 };
-use libc::{c_char, c_int, c_void, getsockopt, SO_LINGER, S_IFMT, S_IFSOCK};
+use libc::{S_IFMT, S_IFSOCK, SO_LINGER, c_char, c_int, c_void, getsockopt};
 use libc::{iovec, msghdr, off_t, recvmsg, sendmsg};
 use libc::{sa_family_t, setsockopt, size_t, sockaddr, sockaddr_un, socketpair, socklen_t};
-use libc::{EAGAIN, EWOULDBLOCK};
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll, Token};
 use std::cell::Cell;
@@ -26,7 +24,7 @@ use std::cmp;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::error::Error as StdError;
-use std::ffi::{c_uint, CString};
+use std::ffi::{CString, c_uint};
 use std::fmt::{self, Debug, Formatter};
 use std::hash::BuildHasherDefault;
 use std::io;
@@ -36,8 +34,8 @@ use std::ops::{Deref, RangeFrom};
 use std::os::fd::RawFd;
 use std::ptr;
 use std::slice;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
 use tempfile::{Builder, TempDir};
@@ -388,10 +386,13 @@ impl OsIpcSender {
                     // using a reduced send buffer size.
                     //
                     // Any other errors we might get here are non-recoverable.
-                    if !(matches!(error, UnixError::Errno(libc::ENOBUFS))
-                        && downsize(&mut sendbuf_size, data.len()).is_ok())
-                    {
-                        return Err(error);
+                    match error {
+                        UnixError::Io(e)
+                            if e.raw_os_error() == Some(libc::ENOBUFS)
+                                && downsize(&mut sendbuf_size, data.len()).is_ok() => {},
+                        _ => {
+                            return Err(error);
+                        },
                     }
                 },
             }
@@ -430,14 +431,19 @@ impl OsIpcSender {
             };
 
             if let Err(error) = result {
-                if matches!(error, UnixError::Errno(libc::ENOBUFS))
-                    && downsize(&mut sendbuf_size, end_byte_position - byte_position).is_ok()
-                {
-                    // If the kernel failed to allocate a buffer large enough for the packet,
-                    // retry with a smaller size (if possible).
-                    continue;
-                } else {
-                    return Err(error);
+                match error {
+                    UnixError::Io(e)
+                        if e.raw_os_error() == Some(libc::ENOBUFS)
+                            && downsize(&mut sendbuf_size, end_byte_position - byte_position)
+                                .is_ok() =>
+                    {
+                        // If the kernel failed to allocate a buffer large enough for the packet,
+                        // retry with a smaller size (if possible).
+                        continue;
+                    },
+                    _ => {
+                        return Err(error);
+                    },
                 }
             }
 
@@ -570,7 +576,7 @@ impl OsIpcReceiverSet {
                         selection_results.push(OsIpcSelectionResult::ChannelClosed(poll_entry.id));
                         break;
                     },
-                    Err(UnixError::Errno(code)) if code == EWOULDBLOCK => {
+                    Err(UnixError::Empty) => {
                         // We tried to read another message from the file descriptor and
                         // it would have blocked, so we have exhausted all of the data
                         // pending to read.
@@ -723,7 +729,7 @@ fn make_socket_lingering(sockfd: c_int) -> Result<(), UnixError> {
     };
     if err < 0 {
         let error = UnixError::last();
-        if let UnixError::Errno(libc::EINVAL) = error {
+        if matches!(error, UnixError::Io(ref e) if e.kind() == io::ErrorKind::InvalidInput) {
             // If the other side of the connection is already closed, POSIX.1-2024 (and earlier
             // versions) require that setsockopt return EINVAL [1]. This is a bit unfortunate
             // because SO_LINGER for a closed socket is logically a no-op, which is why some OSes
@@ -912,14 +918,14 @@ impl OsIpcSharedMemory {
 
 #[derive(Debug)]
 pub enum UnixError {
-    Errno(c_int),
+    Empty,
     ChannelClosed,
-    IoError(io::Error),
+    Io(io::Error),
 }
 
 impl UnixError {
     fn last() -> UnixError {
-        UnixError::Errno(io::Error::last_os_error().raw_os_error().unwrap())
+        UnixError::Io(io::Error::last_os_error())
     }
 
     #[allow(dead_code)]
@@ -931,61 +937,36 @@ impl UnixError {
 impl fmt::Display for UnixError {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            UnixError::Errno(errno) => {
-                fmt::Display::fmt(&io::Error::from_raw_os_error(*errno), fmt)
-            },
-            UnixError::ChannelClosed => write!(fmt, "All senders for this socket closed"),
-            UnixError::IoError(e) => write!(fmt, "{e}"),
+            Self::Empty => write!(fmt, "The socket is empty"),
+            Self::ChannelClosed => write!(fmt, "All senders for this socket closed"),
+            Self::Io(e) => write!(fmt, "{e}"),
         }
     }
 }
 
 impl StdError for UnixError {}
 
-impl From<UnixError> for bincode::Error {
-    fn from(unix_error: UnixError) -> Self {
-        io::Error::from(unix_error).into()
-    }
-}
-
 impl From<UnixError> for io::Error {
     fn from(unix_error: UnixError) -> io::Error {
         match unix_error {
-            UnixError::Errno(errno) => io::Error::from_raw_os_error(errno),
+            UnixError::Empty => io::Error::new(io::ErrorKind::WouldBlock, unix_error),
             UnixError::ChannelClosed => io::Error::new(io::ErrorKind::ConnectionReset, unix_error),
-            UnixError::IoError(e) => e,
-        }
-    }
-}
-
-impl From<UnixError> for ipc::IpcError {
-    fn from(error: UnixError) -> Self {
-        match error {
-            UnixError::ChannelClosed => ipc::IpcError::Disconnected,
-            e => ipc::IpcError::Io(io::Error::from(e)),
-        }
-    }
-}
-
-impl From<UnixError> for ipc::TryRecvError {
-    fn from(error: UnixError) -> Self {
-        match error {
-            UnixError::ChannelClosed => ipc::TryRecvError::IpcError(ipc::IpcError::Disconnected),
-            UnixError::Errno(code) if code == EAGAIN || code == EWOULDBLOCK => {
-                ipc::TryRecvError::Empty
-            },
-            e => ipc::TryRecvError::IpcError(ipc::IpcError::Io(io::Error::from(e))),
+            UnixError::Io(e) => e,
         }
     }
 }
 
 impl From<io::Error> for UnixError {
     fn from(e: io::Error) -> UnixError {
-        if let Some(errno) = e.raw_os_error() {
-            UnixError::Errno(errno)
+        if e.kind() == io::ErrorKind::ConnectionReset {
+            Self::ChannelClosed
+        } else if e.kind() == io::ErrorKind::WouldBlock
+            || matches!(e.raw_os_error(), Some(libc::EAGAIN | libc::EWOULDBLOCK))
+        {
+            // TODO: remove the second half of that condition if possible
+            Self::Empty
         } else {
-            assert!(e.kind() == io::ErrorKind::ConnectionReset);
-            UnixError::ChannelClosed
+            Self::Io(e)
         }
     }
 }
@@ -1179,7 +1160,7 @@ impl UnixCmsg {
                 );
 
                 match result.cmp(&0) {
-                    cmp::Ordering::Equal => return Err(UnixError::Errno(EAGAIN)),
+                    cmp::Ordering::Equal => return Err(UnixError::Empty),
                     cmp::Ordering::Less => return Err(UnixError::last()),
                     cmp::Ordering::Greater => {},
                 }
