@@ -14,7 +14,6 @@ use self::mach_sys::{mach_msg_timeout_t, mach_port_limits_t, mach_port_msgcount_
 use self::mach_sys::{mach_port_right_t, mach_port_t, mach_task_self_, vm_inherit_t};
 use crate::ipc::IpcMessage;
 
-use lazy_static::lazy_static;
 use libc::{self, c_char, c_uint, c_void, size_t};
 use rand::{self, Rng};
 use std::cell::Cell;
@@ -351,9 +350,7 @@ enum SendData<'a> {
     OutOfLine(Option<OsIpcSharedMemory>),
 }
 
-lazy_static! {
-    static ref MAX_INLINE_SIZE: RwLock<usize> = RwLock::new(usize::MAX);
-}
+static MAX_INLINE_SIZE: RwLock<usize> = RwLock::new(usize::MAX);
 
 impl<'a> From<&'a [u8]> for SendData<'a> {
     fn from(data: &'a [u8]) -> SendData<'a> {
