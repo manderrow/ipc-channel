@@ -14,8 +14,7 @@ use self::mach_sys::{mach_msg_timeout_t, mach_port_limits_t, mach_port_msgcount_
 use self::mach_sys::{mach_port_right_t, mach_port_t, mach_task_self_, vm_inherit_t};
 use crate::ipc::IpcMessage;
 
-use libc::{self, c_char, c_uint, c_void, size_t};
-use rand::{self, Rng};
+use rand::Rng;
 use std::cell::Cell;
 use std::convert::TryInto;
 use std::error::Error as StdError;
@@ -23,8 +22,8 @@ use std::ffi::CString;
 use std::fmt::{self, Debug, Formatter};
 use std::io;
 use std::marker::PhantomData;
-use std::mem;
-use std::ops::Deref;
+use std::mem::{self, MaybeUninit};
+use std::ops::{Deref, DerefMut};
 use std::ptr::{self, NonNull};
 use std::slice;
 use std::sync::RwLock;
@@ -62,7 +61,7 @@ const MACH_MSG_TYPE_MAKE_SEND_ONCE: u8 = 21;
 const MACH_MSG_TYPE_MOVE_RECEIVE: u32 = 16;
 const MACH_MSG_TYPE_MOVE_SEND: u32 = 17;
 const MACH_MSG_TYPE_PORT_SEND: u32 = MACH_MSG_TYPE_MOVE_SEND;
-const MACH_MSG_VIRTUAL_COPY: c_uint = 1;
+const MACH_MSG_VIRTUAL_COPY: std::ffi::c_uint = 1;
 const MACH_MSG_VM_KERNEL: kern_return_t = 0x00000400;
 const MACH_MSG_VM_SPACE: kern_return_t = 0x00001000;
 const MACH_NOTIFY_FIRST: i32 = 64;
@@ -115,7 +114,7 @@ const TASK_BOOTSTRAP_PORT: i32 = 4;
 const VM_INHERIT_SHARE: vm_inherit_t = 0;
 
 #[allow(non_camel_case_types)]
-type name_t = *const c_char;
+type name_t = *const std::ffi::c_char;
 
 pub fn channel() -> Result<(OsIpcSender, OsIpcReceiver), MachError> {
     let receiver = OsIpcReceiver::new()?;
@@ -471,72 +470,105 @@ impl OsIpcSender {
             shared_memory_regions.push(data);
         }
 
+        let size = Message::size_of(&data, ports.len(), shared_memory_regions.len());
+        let layout = std::alloc::Layout::array::<u8>(size).map_err(|_| MachError::SendTooLarge)?;
+
+        let Some(message) = NonNull::new(unsafe { std::alloc::alloc(layout) }) else {
+            std::alloc::handle_alloc_error(layout);
+        };
+        let mut message = message.cast::<Message>();
+
         unsafe {
-            let size = Message::size_of(&data, ports.len(), shared_memory_regions.len());
-            let message = libc::malloc(size as size_t) as *mut Message;
-            (*message).header.msgh_bits = (MACH_MSG_TYPE_COPY_SEND as u32) | MACH_MSGH_BITS_COMPLEX;
-            (*message).header.msgh_size = size as u32;
-            (*message).header.msgh_local_port = MACH_PORT_NULL;
-            (*message).header.msgh_remote_port = self.port;
-            (*message).header.msgh_id = 0;
-            (*message).body.msgh_descriptor_count =
-                (ports.len() + shared_memory_regions.len()) as u32;
+            message.write(Message {
+                header: mach_msg_header_t {
+                    msgh_bits: (MACH_MSG_TYPE_COPY_SEND as u32) | MACH_MSGH_BITS_COMPLEX,
+                    msgh_size: size as u32,
+                    msgh_remote_port: self.port,
+                    msgh_local_port: MACH_PORT_NULL,
+                    msgh_voucher_port: MACH_PORT_NULL,
+                    msgh_id: 0,
+                },
+                body: mach_msg_body_t {
+                    msgh_descriptor_count: (ports.len() + shared_memory_regions.len()) as u32,
+                },
+            });
+        }
 
-            let mut port_descriptor_dest = message.offset(1) as *mut mach_msg_port_descriptor_t;
+        unsafe {
+            let mut port_descriptor_dest = message.offset(1).cast::<mach_msg_port_descriptor_t>();
             for outgoing_port in &ports {
-                (*port_descriptor_dest).name = outgoing_port.port();
-                (*port_descriptor_dest).pad1 = 0;
-
-                (*port_descriptor_dest).set_disposition(match *outgoing_port {
-                    OsIpcChannel::Sender(_) => MACH_MSG_TYPE_MOVE_SEND,
-                    OsIpcChannel::Receiver(_) => MACH_MSG_TYPE_MOVE_RECEIVE,
+                port_descriptor_dest.write(mach_msg_port_descriptor_t {
+                    name: outgoing_port.port(),
+                    pad1: 0,
+                    _bitfield_align_1: [],
+                    _bitfield_1: mach_sys::__BindgenBitfieldUnit::new([0; 4]),
                 });
 
-                (*port_descriptor_dest).set_type(MACH_MSG_PORT_DESCRIPTOR);
+                port_descriptor_dest
+                    .as_mut()
+                    .set_disposition(match *outgoing_port {
+                        OsIpcChannel::Sender(_) => MACH_MSG_TYPE_MOVE_SEND,
+                        OsIpcChannel::Receiver(_) => MACH_MSG_TYPE_MOVE_RECEIVE,
+                    });
+
+                port_descriptor_dest
+                    .as_mut()
+                    .set_type(MACH_MSG_PORT_DESCRIPTOR);
+
                 port_descriptor_dest = port_descriptor_dest.offset(1);
             }
 
             let mut shared_memory_descriptor_dest =
-                port_descriptor_dest as *mut mach_msg_ool_descriptor_t;
-            for shared_memory_region in &shared_memory_regions {
-                (*shared_memory_descriptor_dest).address =
-                    shared_memory_region.as_ptr() as *const c_void as *mut c_void;
-                (*shared_memory_descriptor_dest).size = shared_memory_region.len() as u32;
-                (*shared_memory_descriptor_dest).set_deallocate(1);
-                (*shared_memory_descriptor_dest).set_copy(MACH_MSG_VIRTUAL_COPY);
-                (*shared_memory_descriptor_dest).set_type(MACH_MSG_OOL_DESCRIPTOR);
+                port_descriptor_dest.cast::<mach_msg_ool_descriptor_t>();
+            for shared_memory_region in &mut shared_memory_regions {
+                shared_memory_descriptor_dest.write(mach_msg_ool_descriptor_t {
+                    address: shared_memory_region.as_mut_ptr().cast(),
+                    size: shared_memory_region.len() as u32,
+                    _bitfield_align_1: [],
+                    _bitfield_1: mach_sys::__BindgenBitfieldUnit::new([0; 4]),
+                });
+
+                shared_memory_descriptor_dest.as_mut().set_deallocate(1);
+                shared_memory_descriptor_dest
+                    .as_mut()
+                    .set_copy(MACH_MSG_VIRTUAL_COPY);
+                shared_memory_descriptor_dest
+                    .as_mut()
+                    .set_type(MACH_MSG_OOL_DESCRIPTOR);
+
                 shared_memory_descriptor_dest = shared_memory_descriptor_dest.offset(1);
             }
 
-            let is_inline_dest = shared_memory_descriptor_dest as *mut bool;
-            *is_inline_dest = data.is_inline();
+            let is_inline_dest = shared_memory_descriptor_dest.cast::<bool>();
+            is_inline_dest.write(data.is_inline());
             if data.is_inline() {
                 // Zero out the last word for paranoia's sake.
-                *((message as *mut u8).offset(size as isize - 4) as *mut u32) = 0;
+                (message.cast::<u8>().offset(size as isize - 4).cast::<u32>()).write(0);
 
                 let data = data.inline_data();
                 let data_size = data.len();
-                let padding_start = is_inline_dest.offset(1) as *mut u8;
-                let padding_count = Message::payload_padding(padding_start as usize);
+                let padding_start = is_inline_dest.offset(1).cast::<u8>();
+                let padding_count = Message::payload_padding(padding_start.addr().get());
                 // Zero out padding
                 padding_start.write_bytes(0, padding_count);
-                let data_size_dest = padding_start.add(padding_count) as *mut usize;
-                *data_size_dest = data_size;
+                let data_size_dest = padding_start.add(padding_count).cast::<usize>();
+                data_size_dest.write(data_size);
 
-                let data_dest = data_size_dest.offset(1) as *mut u8;
-                ptr::copy_nonoverlapping(data.as_ptr(), data_dest, data_size);
+                let data_dest = data_size_dest.offset(1).cast::<u8>();
+                data_dest.copy_from_nonoverlapping(NonNull::from(data).cast(), data_size);
             }
 
+            let send_size = message.as_ref().header.msgh_size;
             let os_result = mach_sys::mach_msg(
-                message as *mut _,
+                &mut message.as_mut().header,
                 MACH_SEND_MSG,
-                (*message).header.msgh_size,
+                send_size,
                 0,
                 MACH_PORT_NULL,
                 MACH_MSG_TIMEOUT_NONE,
                 MACH_PORT_NULL,
             );
-            libc::free(message as *mut _);
+            std::alloc::dealloc(message.cast::<u8>().as_ptr(), layout);
             if os_result == MACH_SEND_TOO_LARGE && data.is_inline() {
                 let inline_data = data.inline_data();
                 {
@@ -670,10 +702,10 @@ fn select(
 ) -> Result<OsIpcSelectionResult, MachError> {
     debug_assert!(port != MACH_PORT_NULL);
     unsafe {
-        let mut buffer = [0; SMALL_MESSAGE_SIZE];
-        let mut allocated_buffer = None;
+        let mut buffer = [MaybeUninit::<u8>::uninit(); SMALL_MESSAGE_SIZE];
+        let mut allocated_buffer_and_layout = None;
         setup_receive_buffer(&mut buffer, port);
-        let mut message = &mut buffer[0] as *mut _ as *mut Message;
+        let mut message = NonNull::from(&mut buffer).cast::<Message>();
         let (flags, timeout) = match blocking_mode {
             BlockingMode::Blocking => (MACH_RCV_MSG | MACH_RCV_LARGE, MACH_MSG_TIMEOUT_NONE),
             BlockingMode::Nonblocking => (MACH_RCV_MSG | MACH_RCV_LARGE | MACH_RCV_TIMEOUT, 0),
@@ -684,31 +716,42 @@ fn select(
                 .unwrap_or((MACH_RCV_MSG | MACH_RCV_LARGE, MACH_MSG_TIMEOUT_NONE)),
         };
         match mach_sys::mach_msg(
-            message as *mut _,
+            ptr::addr_of_mut!((*message.as_ptr()).header),
             flags,
             0,
-            (*message).header.msgh_size,
+            *ptr::addr_of_mut!((*message.as_ptr()).header.msgh_size),
             port,
             timeout,
             MACH_PORT_NULL,
         ) {
             MACH_RCV_TOO_LARGE => {
+                println!("hit allocated buffer path");
                 let max_trailer_size =
                     mem::size_of::<mach_sys::mach_msg_max_trailer_t>() as mach_sys::mach_msg_size_t;
                 // the actual size gets written into msgh_size by the kernel
-                let mut actual_size = (*message).header.msgh_size + max_trailer_size;
+                let mut actual_size =
+                    *ptr::addr_of_mut!((*message.as_ptr()).header.msgh_size) + max_trailer_size;
                 loop {
-                    allocated_buffer = Some(libc::malloc(actual_size as size_t));
+                    let Ok(layout) = std::alloc::Layout::array::<u8>(
+                        actual_size.try_into().map_err(|_| MachError::RcvTooLarge)?,
+                    ) else {
+                        return Err(MachError::RcvTooLarge);
+                    };
+                    let Some(allocated_buffer) = NonNull::new(std::alloc::alloc(layout)) else {
+                        std::alloc::handle_alloc_error(layout);
+                    };
+                    allocated_buffer_and_layout = Some((allocated_buffer, layout));
                     setup_receive_buffer(
-                        slice::from_raw_parts_mut(
-                            allocated_buffer.unwrap() as *mut u8,
+                        NonNull::slice_from_raw_parts(
+                            allocated_buffer.cast::<MaybeUninit<u8>>(),
                             actual_size as usize,
-                        ),
+                        )
+                        .as_mut(),
                         port,
                     );
-                    message = allocated_buffer.unwrap() as *mut Message;
+                    message = allocated_buffer.cast::<Message>();
                     match mach_sys::mach_msg(
-                        message as *mut _,
+                        ptr::addr_of_mut!((*message.as_ptr()).header),
                         flags,
                         0,
                         actual_size,
@@ -718,12 +761,13 @@ fn select(
                     ) {
                         MACH_MSG_SUCCESS => break,
                         MACH_RCV_TOO_LARGE => {
-                            actual_size = (*message).header.msgh_size + max_trailer_size;
-                            libc::free(allocated_buffer.unwrap() as *mut _);
+                            actual_size = *ptr::addr_of_mut!((*message.as_ptr()).header.msgh_size)
+                                + max_trailer_size;
+                            std::alloc::dealloc(allocated_buffer.as_ptr(), layout);
                             continue;
                         },
                         os_result => {
-                            libc::free(allocated_buffer.unwrap() as *mut _);
+                            std::alloc::dealloc(allocated_buffer.as_ptr(), layout);
                             return Err(MachError::from(os_result));
                         },
                     }
@@ -733,46 +777,50 @@ fn select(
             os_result => return Err(MachError::from(os_result)),
         }
 
-        let local_port = (*message).header.msgh_local_port;
-        if (*message).header.msgh_id == MACH_NOTIFY_NO_SENDERS {
+        let local_port = *ptr::addr_of_mut!((*message.as_ptr()).header.msgh_local_port);
+        if *ptr::addr_of_mut!((*message.as_ptr()).header.msgh_id) == MACH_NOTIFY_NO_SENDERS {
             return Ok(OsIpcSelectionResult::ChannelClosed(local_port as u64));
         }
 
         let (mut ports, mut shared_memory_regions) = (Vec::new(), Vec::new());
-        let mut port_descriptor = message.offset(1) as *mut mach_msg_port_descriptor_t;
-        let mut descriptors_remaining = (*message).body.msgh_descriptor_count;
+        let mut port_descriptor = message.offset(1).cast::<mach_msg_port_descriptor_t>();
+        let mut descriptors_remaining =
+            *ptr::addr_of_mut!((*message.as_ptr()).body.msgh_descriptor_count);
         while descriptors_remaining > 0 {
-            if (*port_descriptor).type_() != MACH_MSG_PORT_DESCRIPTOR {
+            if port_descriptor.as_ref().type_() != MACH_MSG_PORT_DESCRIPTOR {
                 break;
             }
-            ports.push(OsOpaqueIpcChannel::from_name((*port_descriptor).name));
+            ports.push(OsOpaqueIpcChannel::from_name(port_descriptor.as_ref().name));
             port_descriptor = port_descriptor.offset(1);
             descriptors_remaining -= 1;
         }
 
-        let mut shared_memory_descriptor = port_descriptor as *mut mach_msg_ool_descriptor_t;
+        let mut shared_memory_descriptor = port_descriptor.cast::<mach_msg_ool_descriptor_t>();
         while descriptors_remaining > 0 {
-            debug_assert!((*shared_memory_descriptor).type_() == MACH_MSG_OOL_DESCRIPTOR);
+            debug_assert!(shared_memory_descriptor.as_ref().type_() == MACH_MSG_OOL_DESCRIPTOR);
             shared_memory_regions.push(OsIpcSharedMemory::from_raw_parts(
-                (*shared_memory_descriptor).address as *mut u8,
-                (*shared_memory_descriptor).size as usize,
+                shared_memory_descriptor.as_ref().address as *mut u8,
+                shared_memory_descriptor.as_ref().size as usize,
             ));
             shared_memory_descriptor = shared_memory_descriptor.offset(1);
             descriptors_remaining -= 1;
         }
 
-        let has_inline_data_ptr = shared_memory_descriptor as *mut bool;
-        let has_inline_data = *has_inline_data_ptr;
+        let has_inline_data_ptr = shared_memory_descriptor.cast::<bool>();
+        let has_inline_data = *has_inline_data_ptr.as_ref();
         let payload = if has_inline_data {
-            let padding_start = has_inline_data_ptr.offset(1) as *mut u8;
-            let padding_count = Message::payload_padding(padding_start as usize);
-            let payload_size_ptr = padding_start.add(padding_count) as *mut usize;
-            let payload_size = *payload_size_ptr;
-            let max_payload_size = message as usize + ((*message).header.msgh_size as usize)
-                - (shared_memory_descriptor as usize);
+            let padding_start = has_inline_data_ptr.offset(1).cast::<u8>();
+            let padding_count = Message::payload_padding(padding_start.addr().get());
+            let payload_size_ptr = padding_start.add(padding_count).cast::<usize>();
+            let payload_size = *payload_size_ptr.as_ref();
+            let max_payload_size = message.addr().get()
+                + (message.as_ref().header.msgh_size as usize)
+                - shared_memory_descriptor.addr().get();
             assert!(payload_size <= max_payload_size);
-            let payload_ptr = payload_size_ptr.offset(1) as *mut u8;
-            slice::from_raw_parts(payload_ptr, payload_size).to_vec()
+            let payload_ptr = payload_size_ptr.offset(1).cast::<u8>();
+            NonNull::slice_from_raw_parts(payload_ptr, payload_size)
+                .as_ref()
+                .to_vec()
         } else {
             let ool_payload = shared_memory_regions
                 .pop()
@@ -780,8 +828,8 @@ fn select(
             ool_payload.to_vec()
         };
 
-        if let Some(allocated_buffer) = allocated_buffer {
-            libc::free(allocated_buffer)
+        if let Some((allocated_buffer, layout)) = allocated_buffer_and_layout {
+            std::alloc::dealloc(allocated_buffer.cast().as_ptr(), layout)
         }
 
         Ok(OsIpcSelectionResult::DataReceived(
@@ -894,6 +942,16 @@ impl Deref for OsIpcSharedMemory {
     }
 }
 
+impl DerefMut for OsIpcSharedMemory {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [u8] {
+        if self.ptr.is_null() && self.length > 0 {
+            panic!("attempted to access a consumed `OsIpcSharedMemory`")
+        }
+        unsafe { slice::from_raw_parts_mut(self.ptr, self.length) }
+    }
+}
+
 impl OsIpcSharedMemory {
     #[inline]
     pub unsafe fn deref_mut(&mut self) -> &mut [u8] {
@@ -937,10 +995,19 @@ unsafe fn allocate_vm_pages(length: usize) -> *mut u8 {
     address as *mut u8
 }
 
-unsafe fn setup_receive_buffer(buffer: &mut [u8], port_name: mach_port_t) {
-    let mut message = NonNull::from(&mut *buffer).cast::<mach_msg_header_t>();
-    unsafe { message.as_mut() }.msgh_local_port = port_name;
-    unsafe { message.as_mut() }.msgh_size = buffer.len() as u32
+unsafe fn setup_receive_buffer(buffer: &mut [MaybeUninit<u8>], port_name: mach_port_t) {
+    let header: NonNull<mach_msg_header_t> =
+        NonNull::from(&mut *buffer).cast::<mach_msg_header_t>();
+    unsafe {
+        header.write(mach_msg_header_t {
+            msgh_bits: 0,
+            msgh_size: buffer.len() as u32,
+            msgh_remote_port: 0,
+            msgh_local_port: port_name,
+            msgh_voucher_port: 0,
+            msgh_id: 0,
+        })
+    };
 }
 
 unsafe fn mach_task_self() -> mach_port_t {
@@ -955,8 +1022,6 @@ fn deallocate_mach_port(port: mach_port_t) {
     let err = unsafe { mach_port_deallocate(mach_task_self(), port) };
     if err != KERN_SUCCESS {
         panic!("mach_port_deallocate({}) failed: {:?}", port, err);
-    } else {
-        println!("mach_port_deallocate({})", port);
     }
 }
 
