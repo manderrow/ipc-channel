@@ -7,15 +7,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use crate::ipc::{self, IpcMessage};
-use bincode;
-use serde;
-
 use std::{
     cell::{Cell, RefCell},
     cmp::PartialEq,
     convert::TryInto,
-    env,
     ffi::CString,
     fmt, io,
     marker::{PhantomData, Send, Sync},
@@ -26,41 +21,44 @@ use std::{
     thread,
     time::Duration,
 };
+
 use uuid::Uuid;
 use windows::{
-    core::{Error as WinError, PCSTR},
     Win32::{
         Foundation::{
-            CloseHandle, CompareObjectHandles, DuplicateHandle, GetLastError,
-            DUPLICATE_CLOSE_SOURCE, DUPLICATE_HANDLE_OPTIONS, DUPLICATE_SAME_ACCESS,
-            ERROR_BROKEN_PIPE, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_NOT_FOUND,
-            ERROR_NO_DATA, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT,
+            CloseHandle, CompareObjectHandles, DUPLICATE_CLOSE_SOURCE, DUPLICATE_HANDLE_OPTIONS,
+            DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_BROKEN_PIPE, ERROR_IO_INCOMPLETE,
+            ERROR_IO_PENDING, ERROR_NOT_FOUND, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
+            WAIT_TIMEOUT,
         },
         Storage::FileSystem::{
-            CreateFileA, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OVERLAPPED,
-            FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_MODE, OPEN_EXISTING,
-            PIPE_ACCESS_DUPLEX,
+            CreateFileA, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ,
+            FILE_GENERIC_WRITE, FILE_SHARE_MODE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX, ReadFile,
+            WriteFile,
         },
         System::{
+            IO::{
+                CancelIoEx, CreateIoCompletionPort, GetOverlappedResult, GetOverlappedResultEx,
+                GetQueuedCompletionStatus, OVERLAPPED,
+            },
             Memory::{
-                CreateFileMappingA, MapViewOfFile, UnmapViewOfFile, FILE_MAP_ALL_ACCESS,
-                MEMORY_MAPPED_VIEW_ADDRESS, PAGE_READWRITE, SEC_COMMIT,
+                CreateFileMappingA, FILE_MAP_ALL_ACCESS, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
+                PAGE_READWRITE, SEC_COMMIT, UnmapViewOfFile,
             },
             Pipes::{
                 ConnectNamedPipe, CreateNamedPipeA, GetNamedPipeServerProcessId,
                 PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
             },
             Threading::{
-                CreateEventA, GetCurrentProcess, GetCurrentProcessId, OpenProcess, ResetEvent,
-                INFINITE, PROCESS_DUP_HANDLE,
-            },
-            IO::{
-                CancelIoEx, CreateIoCompletionPort, GetOverlappedResult, GetOverlappedResultEx,
-                GetQueuedCompletionStatus, OVERLAPPED,
+                CreateEventA, GetCurrentProcess, GetCurrentProcessId, INFINITE, OpenProcess,
+                PROCESS_DUP_HANDLE, ResetEvent,
             },
         },
     },
+    core::{Error as WinError, PCSTR},
 };
+
+use crate::ipc::{BINCODE_CONFIG, IpcMessage};
 
 mod aliased_cell;
 
@@ -70,7 +68,8 @@ use self::aliased_cell::AliasedCell;
 mod tests;
 
 static CURRENT_PROCESS_ID: LazyLock<u32> = LazyLock::new(|| unsafe { GetCurrentProcessId() });
-static CURRENT_PROCESS_HANDLE: LazyLock<WinHandle> = LazyLock::new(|| WinHandle::new(unsafe { GetCurrentProcess() }));
+static CURRENT_PROCESS_HANDLE: LazyLock<WinHandle> =
+    LazyLock::new(|| WinHandle::new(unsafe { GetCurrentProcess() }));
 
 // Added to overcome build error where Box<OVERLAPPED> was used and
 // struct had a trait of #[derive(Debug)].  Adding NoDebug<> overrode the Debug() trait.
@@ -96,17 +95,18 @@ impl<T> fmt::Debug for NoDebug<T> {
     }
 }
 
-lazy_static! {
-    static ref DEBUG_TRACE_ENABLED: bool = env::var_os("IPC_CHANNEL_WIN_DEBUG_TRACE").is_some();
-}
+#[cfg(feature = "win32-trace")]
+static DEBUG_TRACE_ENABLED: LazyLock<bool> =
+    LazyLock::new(|| std::env::var_os("IPC_CHANNEL_WIN_DEBUG_TRACE").is_some());
 
 /// Debug macro to better track what's going on in case of errors.
 macro_rules! win32_trace {
-    ($($rest:tt)*) => {
-        if cfg!(feature = "win32-trace") {
+    ($($rest:tt)*) => {{
+        #[cfg(feature = "win32-trace")]
+        {
             if *DEBUG_TRACE_ENABLED { println!($($rest)*); }
         }
-    }
+    }}
 }
 
 /// When we create the pipe, how big of a write buffer do we specify?
@@ -133,29 +133,31 @@ pub fn channel() -> Result<(OsIpcSender, OsIpcReceiver), WinError> {
 /// Unify the creation of sender and receiver duplex pipes to allow for either to be spawned first.
 /// Requires the use of a duplex and therefore lets both sides read and write.
 unsafe fn create_duplex(pipe_name: &CString) -> Result<HANDLE, WinError> {
-    CreateFileA(
-        PCSTR::from_raw(pipe_name.as_ptr() as *const u8),
-        FILE_GENERIC_WRITE.0 | FILE_GENERIC_READ.0,
-        FILE_SHARE_MODE(0),
-        None, // lpSecurityAttributes
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        None,
-    )
-    .or_else(|_| {
-        CreateNamedPipeA(
+    unsafe {
+        CreateFileA(
             PCSTR::from_raw(pipe_name.as_ptr() as *const u8),
-            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
-            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_REJECT_REMOTE_CLIENTS,
-            // 1 max instance of this pipe
-            1,
-            // out/in buffer sizes
-            0,
-            PIPE_BUFFER_SIZE as u32,
-            0, // default timeout for WaitNamedPipe (0 == 50ms as default)
+            FILE_GENERIC_WRITE.0 | FILE_GENERIC_READ.0,
+            FILE_SHARE_MODE(0),
+            None, // lpSecurityAttributes
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
             None,
         )
-    })
+        .or_else(|_| {
+            CreateNamedPipeA(
+                PCSTR::from_raw(pipe_name.as_ptr() as *const u8),
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_REJECT_REMOTE_CLIENTS,
+                // 1 max instance of this pipe
+                1,
+                // out/in buffer sizes
+                0,
+                PIPE_BUFFER_SIZE as u32,
+                0, // default timeout for WaitNamedPipe (0 == 50ms as default)
+                None,
+            )
+        })
+    }
 }
 
 struct MessageHeader {
@@ -204,17 +206,18 @@ impl<'data> Message<'data> {
         &self.bytes[(mem::size_of::<MessageHeader>() + self.data_len)..]
     }
 
-    fn oob_data(&self) -> Option<OutOfBandMessage> {
+    fn oob_data(&self) -> Result<Option<OutOfBandMessage>, WinIpcError> {
         if self.oob_len > 0 {
-            let mut oob = bincode::deserialize::<OutOfBandMessage>(self.oob_bytes())
-                .expect("Failed to deserialize OOB data");
-            if let Err(e) = oob.recover_handles() {
-                win32_trace!("Failed to recover handles: {:?}", e);
-                return None;
+            let (mut oob, n) =
+                bincode::decode_from_slice::<OutOfBandMessage, _>(self.oob_bytes(), BINCODE_CONFIG)
+                    .map_err(WinIpcError::OOBDataDecodeError)?;
+            if n != self.oob_bytes().len() {
+                return Err(WinIpcError::TrailingBytesInOOBData);
             }
-            Some(oob)
+            oob.recover_handles()?;
+            Ok(Some(oob))
         } else {
-            None
+            Ok(None)
         }
     }
 
@@ -232,7 +235,7 @@ impl<'data> Message<'data> {
 /// process.  On Windows, we duplicate handles on the sender side to a specific
 /// receiver.  If the wrong receiver gets it, those handles are not valid.
 /// These handles are recovered by the `recover_handles` method.
-#[derive(Debug)]
+#[derive(Debug, bincode::Encode, bincode::Decode)]
 struct OutOfBandMessage {
     target_process_id: u32,
     channel_handles: Vec<isize>,
@@ -318,37 +321,6 @@ impl OutOfBandMessage {
         // Close process handle.
         unsafe { CloseHandle(target_process)? };
         Ok(())
-    }
-}
-
-impl serde::Serialize for OutOfBandMessage {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        (
-            self.target_process_id,
-            &self.channel_handles,
-            &self.shmem_handles,
-            &self.big_data_receiver_handle,
-        )
-            .serialize(serializer)
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for OutOfBandMessage {
-    fn deserialize<D>(deserializer: D) -> Result<OutOfBandMessage, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let (target_process_id, channel_handles, shmem_handles, big_data_receiver_handle) =
-            serde::Deserialize::deserialize(deserializer)?;
-        Ok(OutOfBandMessage {
-            target_process_id,
-            channel_handles,
-            shmem_handles,
-            big_data_receiver_handle,
-        })
     }
 }
 
@@ -827,13 +799,13 @@ impl MessageReader {
     ) -> Result<(), WinIpcError> {
         win32_trace!(
             "[$ {:?}] notify_completion",
-            self.r#async.as_ref().unwrap().alias().handle
+            unsafe { self.r#async.as_ref().unwrap().alias() }.handle
         );
 
         // Regardless whether the kernel reported success or error,
         // it doesn't have an async read operation in flight at this point anymore.
         // (And it's safe again to access the `async` data.)
-        let async_data = self.r#async.take().unwrap().into_inner();
+        let async_data = unsafe { self.r#async.take().unwrap().into_inner() };
         self.handle = async_data.handle;
         let ov = async_data.ov;
         self.read_buf = async_data.buf;
@@ -850,7 +822,7 @@ impl MessageReader {
         }
 
         let nbytes = ov.InternalHigh as u32;
-        let offset = ov.Anonymous.Anonymous.Offset;
+        let offset = unsafe { ov.Anonymous.Anonymous.Offset };
 
         assert!(offset == 0);
 
@@ -864,7 +836,7 @@ impl MessageReader {
             self.read_buf.capacity()
         );
         assert!(new_size <= self.read_buf.capacity());
-        self.read_buf.set_len(new_size);
+        unsafe { self.read_buf.set_len(new_size) };
 
         Ok(())
     }
@@ -950,10 +922,15 @@ impl MessageReader {
             let mut shmems: Vec<OsIpcSharedMemory> = vec![];
             let mut big_data = None;
 
-            if let Some(oob) = message.oob_data() {
-                win32_trace!("[$ {:?}] msg with total {} bytes, {} channels, {} shmems, big data handle {:?}",
-                     self.handle, message.data_len, oob.channel_handles.len(), oob.shmem_handles.len(),
-                     oob.big_data_receiver_handle);
+            if let Some(oob) = message.oob_data()? {
+                win32_trace!(
+                    "[$ {:?}] msg with total {} bytes, {} channels, {} shmems, big data handle {:?}",
+                    self.handle,
+                    message.data_len,
+                    oob.channel_handles.len(),
+                    oob.shmem_handles.len(),
+                    oob.big_data_receiver_handle
+                );
 
                 for handle in oob.channel_handles {
                     channels.push(OsOpaqueIpcChannel::new(WinHandle::new(HANDLE(handle as _))));
@@ -1067,6 +1044,7 @@ impl MessageReader {
     /// Get raw handle of the receive port.
     ///
     /// This is only for debug tracing purposes, and must not be used for anything else.
+    #[allow(unused)]
     fn get_raw_handle(&self) -> HANDLE {
         self.handle.as_raw()
     }
@@ -1096,7 +1074,10 @@ fn write_buf(handle: &WinHandle, bytes: &[u8], atomic: AtomicMode) -> Result<(),
         match atomic {
             AtomicMode::Atomic => {
                 if written != total {
-                    panic!("Windows IPC write_buf expected to write full buffer, but only wrote partial (wrote {} out of {} bytes)", written, total);
+                    panic!(
+                        "Windows IPC write_buf expected to write full buffer, but only wrote partial (wrote {} out of {} bytes)",
+                        written, total
+                    );
                 }
             },
             AtomicMode::Nonatomic => {
@@ -1241,7 +1222,7 @@ impl OsIpcReceiver {
             assert!(result.is_err());
             let result = match GetLastError() {
                 // did we successfully connect? (it's reported as an error [ok==false])
-                ERROR_PIPE_CONNECTED => {
+                windows::Win32::Foundation::ERROR_PIPE_CONNECTED => {
                     win32_trace!("[$ {:?}] accept (PIPE_CONNECTED)", handle.as_raw());
                     Ok(())
                 },
@@ -1251,13 +1232,13 @@ impl OsIpcReceiver {
                 // a Connect here will get ERROR_NO_DATA -- but there may be data in
                 // the pipe that we'll be able to read.  So we need to go do some reads
                 // like normal and wait until ReadFile gives us ERROR_NO_DATA.
-                ERROR_NO_DATA => {
+                windows::Win32::Foundation::ERROR_NO_DATA => {
                     win32_trace!("[$ {:?}] accept (ERROR_NO_DATA)", handle.as_raw());
                     Ok(())
                 },
 
                 // the connect is pending; wait for it to complete
-                ERROR_IO_PENDING => {
+                windows::Win32::Foundation::ERROR_IO_PENDING => {
                     let mut nbytes: u32 = 0;
                     GetOverlappedResult(
                         handle.as_raw(),
@@ -1352,21 +1333,14 @@ impl OsIpcSender {
         }
     }
 
-    fn needs_fragmentation(data_len: usize, oob: &OutOfBandMessage) -> bool {
-        let oob_size = if oob.needs_to_be_sent() {
-            bincode::serialized_size(oob).unwrap()
-        } else {
-            0
-        };
-
+    fn needs_fragmentation(data_len: usize, oob_size: usize) -> bool {
         // make sure we don't have too much oob data to begin with
         assert!(
-            (oob_size as usize) <= (PIPE_BUFFER_SIZE - mem::size_of::<MessageHeader>()),
+            oob_size <= (PIPE_BUFFER_SIZE - mem::size_of::<MessageHeader>()),
             "too much oob data"
         );
 
-        let bytes_left_for_data =
-            (PIPE_BUFFER_SIZE - mem::size_of::<MessageHeader>()) - (oob_size as usize);
+        let bytes_left_for_data = (PIPE_BUFFER_SIZE - mem::size_of::<MessageHeader>()) - oob_size;
         data_len >= bytes_left_for_data
     }
 
@@ -1421,7 +1395,9 @@ impl OsIpcSender {
                 },
                 OsIpcChannel::Receiver(r) => {
                     if !(r.prepare_for_transfer()?) {
-                        panic!("Sending receiver with outstanding partial read buffer, noooooo!  What should even happen?");
+                        panic!(
+                            "Sending receiver with outstanding partial read buffer, noooooo!  What should even happen?"
+                        );
                     }
 
                     let handle = r.reader.into_inner().handle.take();
@@ -1432,9 +1408,17 @@ impl OsIpcSender {
             }
         }
 
+        let oob_size = if oob.needs_to_be_sent() {
+            let mut wtr = bincode::enc::write::SizeWriter::default();
+            bincode::encode_into_writer(&oob, &mut wtr, BINCODE_CONFIG).unwrap();
+            wtr.bytes_written
+        } else {
+            0
+        };
+
         // Do we need to fragment?
         let big_data_sender: Option<OsIpcSender> =
-            if OsIpcSender::needs_fragmentation(data.len(), &oob) {
+            if OsIpcSender::needs_fragmentation(data.len(), oob_size) {
                 // We need to create a channel for the big data
                 let (sender, receiver) = channel()?;
 
@@ -1457,9 +1441,9 @@ impl OsIpcSender {
             };
 
         // If we need to send OOB data, serialize it
-        let mut oob_data: Vec<u8> = vec![];
+        let mut oob_data = Vec::<u8>::with_capacity(oob_size);
         if oob.needs_to_be_sent() {
-            oob_data = bincode::serialize(&oob).unwrap();
+            bincode::encode_into_std_write(&oob, &mut oob_data, BINCODE_CONFIG).unwrap();
         }
 
         let in_band_data_len = if big_data_sender.is_none() {
@@ -1959,6 +1943,8 @@ pub enum WinIpcError {
     WinError(WinError),
     ChannelClosed,
     NoData,
+    OOBDataDecodeError(bincode::error::DecodeError),
+    TrailingBytesInOOBData,
 }
 
 impl WinIpcError {
@@ -1967,11 +1953,19 @@ impl WinIpcError {
     }
 }
 
-impl From<WinIpcError> for bincode::Error {
-    fn from(error: WinIpcError) -> bincode::Error {
-        io::Error::from(error).into()
+impl fmt::Display for WinIpcError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WinError(e) => write!(f, "{}", e),
+            Self::ChannelClosed => write!(f, "All senders for this channel closed"),
+            Self::NoData => write!(f, "Channel has no data available"),
+            Self::TrailingBytesInOOBData => write!(f, "OOB data had trailing bytes"),
+            Self::OOBDataDecodeError(e) => write!(f, "{}", e),
+        }
     }
 }
+
+impl std::error::Error for WinIpcError {}
 
 impl From<WinError> for WinIpcError {
     fn from(e: WinError) -> Self {
@@ -1979,39 +1973,21 @@ impl From<WinError> for WinIpcError {
     }
 }
 
-impl From<WinIpcError> for ipc::IpcError {
-    fn from(error: WinIpcError) -> Self {
-        match error {
-            WinIpcError::ChannelClosed => ipc::IpcError::Disconnected,
-            e => ipc::IpcError::Io(io::Error::from(e)),
-        }
-    }
-}
-
-impl From<WinIpcError> for ipc::TryRecvError {
-    fn from(error: WinIpcError) -> Self {
-        match error {
-            WinIpcError::ChannelClosed => ipc::TryRecvError::IpcError(ipc::IpcError::Disconnected),
-            WinIpcError::NoData => ipc::TryRecvError::Empty,
-            e => ipc::TryRecvError::IpcError(ipc::IpcError::Io(io::Error::from(e))),
-        }
-    }
-}
-
 impl From<WinIpcError> for io::Error {
     fn from(error: WinIpcError) -> io::Error {
         match error {
+            WinIpcError::WinError(err) => io::Error::from_raw_os_error(err.code().0),
             WinIpcError::ChannelClosed => {
                 // This is the error code we originally got from the Windows API
                 // to signal the "channel closed" (no sender) condition --
                 // so hand it back to the Windows API to create an appropriate `Error` value.
                 io::Error::from_raw_os_error(ERROR_BROKEN_PIPE.0 as i32)
             },
-            WinIpcError::NoData => io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "Win channel has no data available",
-            ),
-            WinIpcError::WinError(err) => io::Error::from_raw_os_error(err.code().0),
+            WinIpcError::NoData => {
+                io::Error::new(io::ErrorKind::WouldBlock, "Channel has no data available")
+            },
+            WinIpcError::OOBDataDecodeError(e) => io::Error::other(e),
+            WinIpcError::TrailingBytesInOOBData => io::Error::other("OOB data had trailing bytes"),
         }
     }
 }

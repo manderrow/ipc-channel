@@ -56,7 +56,7 @@ mod windows;
 mod os {
     pub use super::windows::*;
 
-    pub use WindowsError as OsError;
+    pub use WinIpcError as OsError;
 }
 
 #[cfg(any(

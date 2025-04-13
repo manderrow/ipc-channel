@@ -102,6 +102,12 @@ impl From<OsError> for RecvError {
                     return Self::Disconnected;
                 }
             }
+            #[cfg(windows)]
+            {
+                if matches!(value, OsError::ChannelClosed) {
+                    return Self::Disconnected;
+                }
+            }
         }
         Self::Os(value)
     }
@@ -149,6 +155,12 @@ impl From<OsError> for TryRecvError {
             ))]
             {
                 if matches!(value, OsError::Empty) {
+                    return Self::Empty;
+                }
+            }
+            #[cfg(windows)]
+            {
+                if matches!(value, OsError::NoData) {
                     return Self::Empty;
                 }
             }

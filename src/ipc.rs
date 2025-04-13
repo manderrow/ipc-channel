@@ -22,7 +22,7 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::time::Duration;
 
-const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
+pub(crate) const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
 
 enum SerContext {
     Size {
