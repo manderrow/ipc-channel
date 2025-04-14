@@ -137,25 +137,23 @@ fn select() {
 
     let person = ("Patrick Walton".to_owned(), 29);
     tx0.send(person.clone()).unwrap();
-    let (received_id, received_data) = rx_set
-        .select()
-        .unwrap()
-        .into_iter()
-        .next()
-        .unwrap()
-        .unwrap();
+    let (received_id, received_data) = match rx_set.select().unwrap().into_iter().next().unwrap() {
+        ipc::IpcSelectionResult::MessageReceived(id, msg) => (id, msg),
+        ipc::IpcSelectionResult::ChannelClosed(id) => {
+            panic!("IpcSelectionResult::unwrap(): channel {} closed", id)
+        },
+    };
     let received_person: Person = received_data.to().unwrap();
     assert_eq!(received_id, rx0_id);
     assert_eq!(received_person, person);
 
     tx1.send(person.clone()).unwrap();
-    let (received_id, received_data) = rx_set
-        .select()
-        .unwrap()
-        .into_iter()
-        .next()
-        .unwrap()
-        .unwrap();
+    let (received_id, received_data) = match rx_set.select().unwrap().into_iter().next().unwrap() {
+        ipc::IpcSelectionResult::MessageReceived(id, msg) => (id, msg),
+        ipc::IpcSelectionResult::ChannelClosed(id) => {
+            panic!("IpcSelectionResult::unwrap(): channel {} closed", id)
+        },
+    };
     let received_person: Person = received_data.to().unwrap();
     assert_eq!(received_id, rx1_id);
     assert_eq!(received_person, person);
@@ -165,7 +163,12 @@ fn select() {
     let (mut received0, mut received1) = (false, false);
     while !received0 || !received1 {
         for result in rx_set.select().unwrap().into_iter() {
-            let (received_id, received_data) = result.unwrap();
+            let (received_id, received_data) = match result {
+                ipc::IpcSelectionResult::MessageReceived(id, msg) => (id, msg),
+                ipc::IpcSelectionResult::ChannelClosed(id) => {
+                    panic!("IpcSelectionResult::unwrap(): channel {} closed", id)
+                },
+            };
             let received_person: Person = received_data.to().unwrap();
             assert_eq!(received_person, person);
             assert!(received_id == rx0_id || received_id == rx1_id);

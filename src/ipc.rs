@@ -641,27 +641,6 @@ pub enum IpcSelectionResult {
     ChannelClosed(u64),
 }
 
-impl IpcSelectionResult {
-    /// Helper method to move the value out of the [IpcSelectionResult] if it
-    /// is [MessageReceived].
-    ///
-    /// # Panics
-    ///
-    /// If the result is [ChannelClosed] this call will panic.
-    ///
-    /// [IpcSelectionResult]: enum.IpcSelectionResult.html
-    /// [MessageReceived]: enum.IpcSelectionResult.html#variant.MessageReceived
-    /// [ChannelClosed]: enum.IpcSelectionResult.html#variant.ChannelClosed
-    pub fn unwrap(self) -> (u64, IpcMessage) {
-        match self {
-            IpcSelectionResult::MessageReceived(id, message) => (id, message),
-            IpcSelectionResult::ChannelClosed(id) => {
-                panic!("IpcSelectionResult::unwrap(): channel {} closed", id)
-            },
-        }
-    }
-}
-
 /// Structure used to represent a raw message from an [`IpcSender`].
 ///
 /// Use the [to] method to deserialize the raw result into the requested type.
