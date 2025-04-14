@@ -1,7 +1,7 @@
 #![allow(clippy::identity_op)]
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use ipc_channel::platform;
-use std::sync::{mpsc, Mutex};
+use std::sync::{Mutex, mpsc};
 
 /// Allows doing multiple inner iterations per bench.iter() run.
 ///

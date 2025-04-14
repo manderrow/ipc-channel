@@ -1,11 +1,11 @@
-use crate::platform::windows::{channel, OutOfBandMessage};
 use crate::platform::OsIpcSharedMemory;
-use windows::core::{HRESULT, PCSTR};
+use crate::platform::windows::{OutOfBandMessage, channel};
 use windows::Win32::Foundation::{
     CloseHandle, CompareObjectHandles, ERROR_INVALID_HANDLE, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows::Win32::System::Memory::{CreateFileMappingA, PAGE_READWRITE};
 use windows::Win32::System::Threading::{CreateEventA, GetCurrentProcessId};
+use windows::core::{HRESULT, PCSTR};
 
 #[test]
 fn test_recover_handles_empty() {
@@ -378,11 +378,13 @@ fn test_recover_handles_different_process() {
             CompareObjectHandles(HANDLE(oob.shmem_handles[0].0 as _), file_mapping_handle)
                 .as_bool()
         );
-        assert!(CompareObjectHandles(
-            HANDLE(oob.big_data_receiver_handle.unwrap().0 as _),
-            big_data_event_handle
-        )
-        .as_bool());
+        assert!(
+            CompareObjectHandles(
+                HANDLE(oob.big_data_receiver_handle.unwrap().0 as _),
+                big_data_event_handle
+            )
+            .as_bool()
+        );
     }
 
     // Clean up
