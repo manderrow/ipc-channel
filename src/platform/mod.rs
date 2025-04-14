@@ -8,26 +8,18 @@
 // except according to those terms.
 
 #[cfg(any(
-    all(
-        not(feature = "force-inprocess"),
-        any(
-            target_os = "linux",
-            target_os = "openbsd",
-            target_os = "freebsd",
-            target_os = "illumos",
-        )
-    ),
+    target_os = "linux",
+    target_os = "openbsd",
+    target_os = "freebsd",
+    target_os = "illumos",
     rust_analyzer
 ))]
 mod unix;
-#[cfg(all(
-    not(feature = "force-inprocess"),
-    any(
-        target_os = "linux",
-        target_os = "openbsd",
-        target_os = "freebsd",
-        target_os = "illumos",
-    )
+#[cfg(any(
+    target_os = "linux",
+    target_os = "openbsd",
+    target_os = "freebsd",
+    target_os = "illumos",
 ))]
 mod os {
     pub use super::unix::*;
@@ -35,49 +27,22 @@ mod os {
     pub use UnixError as OsError;
 }
 
-#[cfg(any(
-    all(not(feature = "force-inprocess"), target_os = "macos"),
-    rust_analyzer
-))]
+#[cfg(any(target_os = "macos", rust_analyzer))]
 mod macos;
-#[cfg(all(not(feature = "force-inprocess"), target_os = "macos"))]
+#[cfg(target_os = "macos")]
 mod os {
     pub use super::macos::*;
 
     pub use MachError as OsError;
 }
 
-#[cfg(any(
-    all(not(feature = "force-inprocess"), target_os = "windows"),
-    rust_analyzer
-))]
+#[cfg(any(target_os = "windows", rust_analyzer))]
 mod windows;
-#[cfg(all(not(feature = "force-inprocess"), target_os = "windows"))]
+#[cfg(target_os = "windows")]
 mod os {
     pub use super::windows::*;
 
     pub use WinIpcError as OsError;
-}
-
-#[cfg(any(
-    feature = "force-inprocess",
-    target_os = "android",
-    target_os = "ios",
-    target_os = "wasi",
-    target_os = "unknown"
-))]
-mod inprocess;
-#[cfg(any(
-    feature = "force-inprocess",
-    target_os = "android",
-    target_os = "ios",
-    target_os = "wasi",
-    target_os = "unknown"
-))]
-mod os {
-    pub use super::inprocess::*;
-
-    pub use super::ChannelError as OsError;
 }
 
 pub use self::os::{

@@ -8,74 +8,46 @@
 // except according to those terms.
 
 use crate::error;
-#[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios")))]
 use crate::ipc::IpcReceiver;
 use crate::ipc::{self, IpcReceiverSet, IpcSender, IpcSharedMemory};
-use crate::router::{ROUTER, RouterProxy};
 use bincode::{Decode, Encode};
-use crossbeam_channel::{self, Sender};
 use std::cell::RefCell;
-#[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios")))]
 use std::env;
-use std::iter;
-#[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios",)))]
 use std::process::{self, Command, Stdio};
 use std::rc::Rc;
-use std::thread;
 
-#[cfg(not(any(
-    feature = "force-inprocess",
-    target_os = "android",
-    target_os = "ios",
-    target_os = "windows"
-)))]
+#[cfg(not(target_os = "windows"))]
 use crate::ipc::IpcOneShotServer;
 
-#[cfg(not(any(
-    feature = "force-inprocess",
-    target_os = "android",
-    target_os = "ios",
-    target_os = "windows",
-)))]
+#[cfg(not(target_os = "windows"))]
 use std::io::Error;
 use std::time::{Duration, Instant};
 
-#[cfg(not(any(
-    feature = "force-inprocess",
-    target_os = "windows",
-    target_os = "android",
-    target_os = "ios"
-)))]
+#[cfg(not(target_os = "windows"))]
 // I'm not actually sure invoking this is indeed unsafe -- but better safe than sorry...
 pub unsafe fn fork<F: FnOnce()>(child_func: F) -> rustix::process::Pid {
-    match unsafe { libc::fork() } {
+    unsafe extern "C" {
+        // don't pull in the whole libc dependency just for this one function
+        fn fork() -> rustix::process::RawPid;
+    }
+
+    match unsafe { fork() } {
         ..-1 => unreachable!(),
         -1 => panic!("Fork failed: {}", Error::last_os_error()),
         0 => {
             child_func();
-            // TODO: can we use std::process::exit safely?
-            unsafe { libc::exit(0) };
+            std::process::exit(0);
         },
         pid => rustix::process::Pid::from_raw(pid).unwrap(),
     }
 }
 
-#[cfg(not(any(
-    feature = "force-inprocess",
-    target_os = "windows",
-    target_os = "android",
-    target_os = "ios"
-)))]
+#[cfg(not(target_os = "windows",))]
 pub trait Wait {
     fn wait(self);
 }
 
-#[cfg(not(any(
-    feature = "force-inprocess",
-    target_os = "windows",
-    target_os = "android",
-    target_os = "ios"
-)))]
+#[cfg(not(target_os = "windows"))]
 impl Wait for rustix::process::Pid {
     fn wait(self) {
         rustix::process::waitpid(Some(self), rustix::process::WaitOptions::empty()).unwrap();
@@ -84,7 +56,6 @@ impl Wait for rustix::process::Pid {
 
 // Helper to get a channel_name argument passed in; used for the
 // cross-process spawn server tests.
-#[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios")))]
 pub fn get_channel_name_arg(which: &str) -> Option<String> {
     for arg in env::args() {
         let arg_str = &*format!("channel_name-{}:", which);
@@ -97,7 +68,6 @@ pub fn get_channel_name_arg(which: &str) -> Option<String> {
 
 // Helper to get a channel_name argument passed in; used for the
 // cross-process spawn server tests.
-#[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios",)))]
 pub fn spawn_server(test_name: &str, server_args: &[(&str, &str)]) -> process::Child {
     Command::new(env::current_exe().unwrap())
         .arg(test_name)
@@ -210,7 +180,6 @@ fn select() {
     }
 }
 
-#[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios")))]
 #[test]
 fn cross_process_embedded_senders_spawn() {
     let person = ("Patrick Walton".to_owned(), 29);
@@ -225,17 +194,11 @@ fn cross_process_embedded_senders_spawn() {
         let tx2: IpcSender<Person> = IpcSender::connect(server2_name).unwrap();
         tx2.send(person.clone()).unwrap();
 
-        // TODO: can we use std::process::exit safely?
-        unsafe { libc::exit(0) };
+        std::process::exit(0);
     }
 }
 
-#[cfg(not(any(
-    feature = "force-inprocess",
-    target_os = "windows",
-    target_os = "android",
-    target_os = "ios"
-)))]
+#[cfg(not(target_os = "windows"))]
 #[test]
 fn cross_process_embedded_senders_fork() {
     let person = ("Patrick Walton".to_owned(), 29);
@@ -256,192 +219,6 @@ fn cross_process_embedded_senders_fork() {
     let (_, received_person): (_, Person) = server2.accept().unwrap();
     child_pid.wait();
     assert_eq!(received_person, person);
-}
-
-#[test]
-fn router_simple_global() {
-    // Note: All ROUTER operation need to run in a single test,
-    // since the state of the router will carry across tests.
-
-    let person = ("Patrick Walton".to_owned(), 29);
-    let (tx, rx) = ipc::channel().unwrap();
-    tx.send(person.clone()).unwrap();
-
-    let (callback_fired_sender, callback_fired_receiver) = crossbeam_channel::unbounded::<Person>();
-    #[allow(deprecated)]
-    ROUTER.add_route(
-        rx.to_opaque(),
-        Box::new(move |person| {
-            callback_fired_sender.send(person.to().unwrap()).unwrap();
-        }),
-    );
-    let received_person = callback_fired_receiver.recv().unwrap();
-    assert_eq!(received_person, person);
-
-    // Try the same, with a strongly typed route
-    let message: usize = 42;
-    let (tx, rx) = ipc::channel().unwrap();
-    tx.send(message.clone()).unwrap();
-
-    let (callback_fired_sender, callback_fired_receiver) = crossbeam_channel::unbounded::<usize>();
-    ROUTER.add_typed_route(
-        rx,
-        Box::new(move |message| {
-            callback_fired_sender.send(message.unwrap()).unwrap();
-        }),
-    );
-    let received_message = callback_fired_receiver.recv().unwrap();
-    assert_eq!(received_message, message);
-
-    // Now shutdown the router.
-    ROUTER.shutdown();
-
-    // Use router after shutdown.
-    let person = ("Patrick Walton".to_owned(), 29);
-    let (tx, rx) = ipc::channel().unwrap();
-    tx.send(person.clone()).unwrap();
-
-    let (callback_fired_sender, callback_fired_receiver) = crossbeam_channel::unbounded::<Person>();
-    ROUTER.add_typed_route(
-        rx,
-        Box::new(move |person| {
-            callback_fired_sender.send(person.unwrap()).unwrap();
-        }),
-    );
-
-    // The sender should have been dropped.
-    let received_person = callback_fired_receiver.recv();
-    assert!(received_person.is_err());
-
-    // Shutdown the router, again(should be a no-op).
-    ROUTER.shutdown();
-}
-
-#[test]
-fn router_routing_to_new_crossbeam_receiver() {
-    let person = ("Patrick Walton".to_owned(), 29);
-    let (tx, rx) = ipc::channel().unwrap();
-    tx.send(person.clone()).unwrap();
-
-    let router = RouterProxy::new();
-    let crossbeam_receiver = router.route_ipc_receiver_to_new_crossbeam_receiver(rx);
-    let received_person = crossbeam_receiver.recv().unwrap();
-    assert_eq!(received_person, person);
-}
-
-#[test]
-fn router_multiplexing() {
-    let person = ("Patrick Walton".to_owned(), 29);
-    let (tx0, rx0) = ipc::channel().unwrap();
-    tx0.send(person.clone()).unwrap();
-    let (tx1, rx1) = ipc::channel().unwrap();
-    tx1.send(person.clone()).unwrap();
-
-    let router = RouterProxy::new();
-    let crossbeam_rx_0 = router.route_ipc_receiver_to_new_crossbeam_receiver(rx0);
-    let crossbeam_rx_1 = router.route_ipc_receiver_to_new_crossbeam_receiver(rx1);
-    let received_person_0 = crossbeam_rx_0.recv().unwrap();
-    let received_person_1 = crossbeam_rx_1.recv().unwrap();
-    assert_eq!(received_person_0, person);
-    assert_eq!(received_person_1, person);
-}
-
-#[test]
-fn router_multithreaded_multiplexing() {
-    let person = ("Patrick Walton".to_owned(), 29);
-
-    let person_for_thread = person.clone();
-    let (tx0, rx0) = ipc::channel().unwrap();
-    thread::spawn(move || tx0.send(person_for_thread).unwrap());
-    let person_for_thread = person.clone();
-    let (tx1, rx1) = ipc::channel().unwrap();
-    thread::spawn(move || tx1.send(person_for_thread).unwrap());
-
-    let router = RouterProxy::new();
-    let crossbeam_rx_0 = router.route_ipc_receiver_to_new_crossbeam_receiver(rx0);
-    let crossbeam_rx_1 = router.route_ipc_receiver_to_new_crossbeam_receiver(rx1);
-    let received_person_0 = crossbeam_rx_0.recv().unwrap();
-    let received_person_1 = crossbeam_rx_1.recv().unwrap();
-    assert_eq!(received_person_0, person);
-    assert_eq!(received_person_1, person);
-}
-
-#[test]
-fn router_drops_callbacks_on_sender_shutdown() {
-    struct Dropper {
-        sender: Sender<i32>,
-    }
-
-    impl Drop for Dropper {
-        fn drop(&mut self) {
-            self.sender.send(42).unwrap();
-        }
-    }
-
-    let (tx0, rx0) = ipc::channel::<()>().unwrap();
-    let (drop_tx, drop_rx) = crossbeam_channel::unbounded();
-    let dropper = Dropper { sender: drop_tx };
-
-    let router = RouterProxy::new();
-    router.add_typed_route(
-        rx0,
-        Box::new(move |_| {
-            let _ = &dropper;
-        }),
-    );
-    drop(tx0);
-    assert_eq!(drop_rx.recv(), Ok(42));
-}
-
-#[test]
-fn router_drops_callbacks_on_cloned_sender_shutdown() {
-    struct Dropper {
-        sender: Sender<i32>,
-    }
-
-    impl Drop for Dropper {
-        fn drop(&mut self) {
-            self.sender.send(42).unwrap()
-        }
-    }
-
-    let (tx0, rx0) = ipc::channel::<()>().unwrap();
-    let (drop_tx, drop_rx) = crossbeam_channel::unbounded();
-    let dropper = Dropper { sender: drop_tx };
-
-    let router = RouterProxy::new();
-    router.add_typed_route(
-        rx0,
-        Box::new(move |_| {
-            let _ = &dropper;
-        }),
-    );
-    let txs = vec![tx0.clone(), tx0.clone(), tx0.clone()];
-    drop(txs);
-    drop(tx0);
-    assert_eq!(drop_rx.recv(), Ok(42));
-}
-
-#[test]
-fn router_big_data() {
-    let person = ("Patrick Walton".to_owned(), 29);
-    let people: Vec<_> = iter::repeat(person).take(64 * 1024).collect();
-    let (tx, rx) = ipc::channel().unwrap();
-    let people_for_subthread = people.clone();
-    let thread = thread::spawn(move || {
-        tx.send(people_for_subthread).unwrap();
-    });
-
-    let (callback_fired_sender, callback_fired_receiver) =
-        crossbeam_channel::unbounded::<Vec<Person>>();
-    let router = RouterProxy::new();
-    router.add_typed_route(
-        rx,
-        Box::new(move |people| callback_fired_sender.send(people.unwrap()).unwrap()),
-    );
-    let received_people = callback_fired_receiver.recv().unwrap();
-    assert_eq!(received_people, people);
-    thread.join().unwrap();
 }
 
 #[test]
@@ -696,31 +473,4 @@ fn transfer_closed_sender() {
     let (transfer_tx, _) = ipc::channel::<()>().unwrap();
     assert!(main_tx.send(transfer_tx).is_ok());
     let _transferred_tx = main_rx.recv().unwrap();
-}
-
-#[cfg(feature = "async")]
-#[test]
-fn test_receiver_stream() {
-    use futures_core::Stream;
-    use futures_core::task::Context;
-    use futures_core::task::Poll;
-    use std::pin::Pin;
-    let (tx, rx) = ipc::channel().unwrap();
-    let (waker, count) = futures_test::task::new_count_waker();
-    let mut ctx = Context::from_waker(&waker);
-    let mut stream = rx.to_stream();
-
-    assert_eq!(count, 0);
-    match Pin::new(&mut stream).poll_next(&mut ctx) {
-        Poll::Pending => (),
-        _ => panic!("Stream shouldn't have data"),
-    };
-    assert_eq!(count, 0);
-    tx.send(5).unwrap();
-    thread::sleep(std::time::Duration::from_millis(1000));
-    assert_eq!(count, 1);
-    match Pin::new(&mut stream).poll_next(&mut ctx) {
-        Poll::Ready(Some(Ok(5))) => (),
-        _ => panic!("Stream should have 5"),
-    };
 }

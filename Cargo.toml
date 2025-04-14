@@ -25,32 +25,23 @@ harness = false
 
 [features]
 default = []
-force-inprocess = []
-async = ["dep:futures-core", "dep:futures-channel"]
 win32-trace = []
 
 [dependencies]
 bincode = "2"
-crossbeam-channel = "0.5"
 fnv = "1.0.3"
-futures-channel = { version = "0.3.31", optional = true }
-futures-core = { version = "0.3.31", optional = true }
-libc = "0.2.162"
-rustix = { version = "1", features = ["process"] }
 uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "openbsd", target_os = "freebsd", target_os = "illumos"))'.dependencies]
+libc = "0.2.162"
 mio = { version = "1.0", default-features = false, features = ["os-ext"] }
 tempfile = "3.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 rand = "0.9"
 
-[dev-dependencies]
-crossbeam-utils = "0.8"
-futures-test = "0.3"
-static_assertions = "1.1.0"
-criterion = { version = "0.5", features = ["html_reports"] }
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+rustix = { version = "1", features = ["process"] }
 
 [target.'cfg(target_os = "windows")'.dependencies.windows]
 version = "0.58.0"
@@ -64,6 +55,11 @@ features = [
     "Win32_Storage_FileSystem",
     "Win32_Security",
 ]
+
+[dev-dependencies]
+crossbeam-utils = "0.8"
+static_assertions = "1.1.0"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(rust_analyzer)'] }

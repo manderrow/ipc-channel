@@ -16,17 +16,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::platform::{OsIpcOneShotServer, OsIpcSender};
-#[cfg(not(any(
-    feature = "force-inprocess",
-    target_os = "windows",
-    target_os = "android",
-    target_os = "ios"
-)))]
+#[cfg(not(target_os = "windows"))]
 use crate::test::{Wait, fork};
 
 // Helper to get a channel_name argument passed in; used for the
 // cross-process spawn server tests.
-#[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios")))]
 use crate::test::{get_channel_name_arg, spawn_server};
 
 #[test]
@@ -221,14 +215,11 @@ fn with_n_fds(n: usize, size: usize) {
 }
 
 // These tests only apply to platforms that need fragmentation.
-#[cfg(all(
-    not(feature = "force-inprocess"),
-    any(
-        target_os = "linux",
-        target_os = "freebsd",
-        target_os = "illumos",
-        target_os = "windows",
-    )
+#[cfg(any(
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "illumos",
+    target_os = "windows",
 ))]
 mod fragment_tests {
     use std::sync::LazyLock;
@@ -299,7 +290,7 @@ fn empty() {
 // since sending a channel with the official high-level `ipc-channel` API
 // will always add some data during serialisation.
 // (Namely the index of the corresponding entry within the `channels` vector.)
-#[cfg_attr(all(target_os = "macos", not(feature = "force-inprocess")), ignore)]
+#[cfg_attr(target_os = "macos", ignore)]
 fn fd_only() {
     with_n_fds(1, 0);
 }
@@ -444,12 +435,7 @@ fn receiver_set() {
 }
 
 #[test]
-#[cfg(not(any(
-    feature = "force-inprocess",
-    target_os = "windows",
-    target_os = "android",
-    target_os = "ios"
-)))]
+#[cfg(not(target_os = "windows"))]
 fn receiver_set_eintr() {
     let (server, name) = OsIpcOneShotServer::new().unwrap();
     let child_pid = unsafe {
@@ -709,7 +695,6 @@ fn server_connect_first() {
     assert_eq!(ipc_message, IpcMessage::from_data(data.to_vec()));
 }
 
-#[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios")))]
 #[test]
 fn cross_process_spawn() {
     let data: &[u8] = b"1234567";
@@ -719,8 +704,7 @@ fn cross_process_spawn() {
         let tx = OsIpcSender::connect(channel_name).unwrap();
         tx.send(data, vec![], vec![]).unwrap();
 
-        // TODO: can we use std::process::exit safely?
-        unsafe { libc::exit(0) };
+        std::process::exit(0);
     }
 
     let (server, name) = OsIpcOneShotServer::new().unwrap();
@@ -731,12 +715,7 @@ fn cross_process_spawn() {
     assert_eq!(ipc_message, IpcMessage::from_data(data.to_vec()));
 }
 
-#[cfg(not(any(
-    feature = "force-inprocess",
-    target_os = "windows",
-    target_os = "android",
-    target_os = "ios"
-)))]
+#[cfg(not(target_os = "windows"))]
 #[test]
 fn cross_process_fork() {
     let (server, name) = OsIpcOneShotServer::new().unwrap();
@@ -754,7 +733,6 @@ fn cross_process_fork() {
     assert_eq!(ipc_message, IpcMessage::from_data(data.to_vec()));
 }
 
-#[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios")))]
 #[test]
 fn cross_process_sender_transfer_spawn() {
     let channel_name = get_channel_name_arg("server");
@@ -769,8 +747,7 @@ fn cross_process_sender_transfer_spawn() {
         let data: &[u8] = b"bar";
         super_tx.send(data, vec![], vec![]).unwrap();
 
-        // TODO: can we use std::process::exit safely?
-        unsafe { libc::exit(0) };
+        std::process::exit(0);
     }
 
     let (server, name) = OsIpcOneShotServer::new().unwrap();
@@ -788,12 +765,7 @@ fn cross_process_sender_transfer_spawn() {
     assert_eq!(ipc_message, IpcMessage::from_data(data.to_vec()));
 }
 
-#[cfg(not(any(
-    feature = "force-inprocess",
-    target_os = "windows",
-    target_os = "android",
-    target_os = "ios"
-)))]
+#[cfg(not(target_os = "windows"))]
 #[test]
 fn cross_process_sender_transfer_fork() {
     let (server, name) = OsIpcOneShotServer::new().unwrap();
@@ -1104,7 +1076,6 @@ mod sync_test {
 // Needs investigation.  It may be a similar underlying issue, just done by
 // the kernel instead of explicitly (ports in a message that's already
 // buffered are intended for only one process).
-#[cfg(not(any(feature = "force-inprocess", target_os = "android", target_os = "ios")))]
 #[cfg_attr(any(target_os = "windows"), ignore)]
 #[test]
 fn cross_process_two_step_transfer_spawn() {
@@ -1141,8 +1112,7 @@ fn cross_process_two_step_transfer_spawn() {
         super_tx.send(&ipc_message.data, vec![], vec![]).unwrap();
 
         // terminate
-        // TODO: can we use std::process::exit safely?
-        unsafe { libc::exit(0) };
+        std::process::exit(0);
     }
 
     // create channel 1

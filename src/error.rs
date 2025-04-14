@@ -83,30 +83,27 @@ impl From<DecodeError> for RecvError {
 
 impl From<OsError> for RecvError {
     fn from(value: OsError) -> Self {
-        #[cfg(not(feature = "force-inprocess"))]
+        #[cfg(target_os = "macos")]
         {
-            #[cfg(target_os = "macos")]
-            {
-                if matches!(value, OsError::NotifyNoSenders) {
-                    return Self::Disconnected;
-                }
+            if matches!(value, OsError::NotifyNoSenders) {
+                return Self::Disconnected;
             }
-            #[cfg(any(
-                target_os = "linux",
-                target_os = "openbsd",
-                target_os = "freebsd",
-                target_os = "illumos",
-            ))]
-            {
-                if matches!(value, OsError::ChannelClosed) {
-                    return Self::Disconnected;
-                }
+        }
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "openbsd",
+            target_os = "freebsd",
+            target_os = "illumos",
+        ))]
+        {
+            if matches!(value, OsError::ChannelClosed) {
+                return Self::Disconnected;
             }
-            #[cfg(windows)]
-            {
-                if matches!(value, OsError::ChannelClosed) {
-                    return Self::Disconnected;
-                }
+        }
+        #[cfg(windows)]
+        {
+            if matches!(value, OsError::ChannelClosed) {
+                return Self::Disconnected;
             }
         }
         Self::Os(value)
@@ -139,30 +136,27 @@ impl StdError for TryRecvError {
 
 impl From<OsError> for TryRecvError {
     fn from(value: OsError) -> Self {
-        #[cfg(not(feature = "force-inprocess"))]
+        #[cfg(target_os = "macos")]
         {
-            #[cfg(target_os = "macos")]
-            {
-                if matches!(value, OsError::RcvTimedOut) {
-                    return Self::Empty;
-                }
+            if matches!(value, OsError::RcvTimedOut) {
+                return Self::Empty;
             }
-            #[cfg(any(
-                target_os = "linux",
-                target_os = "openbsd",
-                target_os = "freebsd",
-                target_os = "illumos",
-            ))]
-            {
-                if matches!(value, OsError::Empty) {
-                    return Self::Empty;
-                }
+        }
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "openbsd",
+            target_os = "freebsd",
+            target_os = "illumos",
+        ))]
+        {
+            if matches!(value, OsError::Empty) {
+                return Self::Empty;
             }
-            #[cfg(windows)]
-            {
-                if matches!(value, OsError::NoData) {
-                    return Self::Empty;
-                }
+        }
+        #[cfg(windows)]
+        {
+            if matches!(value, OsError::NoData) {
+                return Self::Empty;
             }
         }
         Self::Recv(value.into())
@@ -207,13 +201,10 @@ impl From<bincode::error::EncodeError> for SendError {
 
 impl From<crate::platform::OsError> for SendError {
     fn from(value: crate::platform::OsError) -> Self {
-        #[cfg(not(feature = "force-inprocess"))]
+        #[cfg(target_os = "macos")]
         {
-            #[cfg(target_os = "macos")]
-            {
-                if matches!(value, crate::platform::OsError::NotifyNoSenders) {
-                    return Self::Disconnected;
-                }
+            if matches!(value, crate::platform::OsError::NotifyNoSenders) {
+                return Self::Disconnected;
             }
         }
         Self::Os(value)
