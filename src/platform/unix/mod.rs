@@ -591,20 +591,6 @@ pub enum OsIpcSelectionResult {
     ChannelClosed(u64),
 }
 
-impl OsIpcSelectionResult {
-    pub fn unwrap(self) -> (u64, IpcMessage) {
-        match self {
-            OsIpcSelectionResult::DataReceived(id, ipc_message) => (id, ipc_message),
-            OsIpcSelectionResult::ChannelClosed(id) => {
-                panic!(
-                    "OsIpcSelectionResult::unwrap(): receiver ID {} was closed!",
-                    id
-                )
-            },
-        }
-    }
-}
-
 #[derive(PartialEq, Debug)]
 pub struct OsOpaqueIpcChannel {
     fd: c_int,

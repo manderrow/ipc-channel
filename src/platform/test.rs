@@ -394,24 +394,22 @@ fn receiver_set() {
 
     let data: &[u8] = b"1234567";
     tx0.send(data, vec![], vec![]).unwrap();
-    let (received_id, ipc_message) = rx_set
-        .select()
-        .unwrap()
-        .into_iter()
-        .next()
-        .unwrap()
-        .unwrap();
+    let (received_id, ipc_message) = match rx_set.select().unwrap().into_iter().next().unwrap() {
+        platform::OsIpcSelectionResult::DataReceived(id, ipc_message) => (id, ipc_message),
+        platform::OsIpcSelectionResult::ChannelClosed(id) => {
+            panic!("OsIpcSelectionResult::unwrap(): receiver ID {id} was closed!")
+        },
+    };
     assert_eq!(received_id, rx0_id);
     assert_eq!(ipc_message.data, data);
 
     tx1.send(data, vec![], vec![]).unwrap();
-    let (received_id, ipc_message) = rx_set
-        .select()
-        .unwrap()
-        .into_iter()
-        .next()
-        .unwrap()
-        .unwrap();
+    let (received_id, ipc_message) = match rx_set.select().unwrap().into_iter().next().unwrap() {
+        platform::OsIpcSelectionResult::DataReceived(id, ipc_message) => (id, ipc_message),
+        platform::OsIpcSelectionResult::ChannelClosed(id) => {
+            panic!("OsIpcSelectionResult::unwrap(): receiver ID {id} was closed!")
+        },
+    };
     assert_eq!(received_id, rx1_id);
     assert_eq!(ipc_message.data, data);
 
@@ -420,7 +418,12 @@ fn receiver_set() {
     let (mut received0, mut received1) = (false, false);
     while !received0 || !received1 {
         for result in rx_set.select().unwrap().into_iter() {
-            let (received_id, ipc_message) = result.unwrap();
+            let (received_id, ipc_message) = match result {
+                platform::OsIpcSelectionResult::DataReceived(id, ipc_message) => (id, ipc_message),
+                platform::OsIpcSelectionResult::ChannelClosed(id) => {
+                    panic!("OsIpcSelectionResult::unwrap(): receiver ID {id} was closed!")
+                },
+            };
             assert_eq!(ipc_message.data, data);
             assert!(received_id == rx0_id || received_id == rx1_id);
             if received_id == rx0_id {
@@ -450,7 +453,12 @@ fn receiver_set_eintr() {
             // Send the result of the select back to the parent
             let result = rx_set.select().unwrap();
             let mut result_iter = result.into_iter();
-            let (id, ipc_message) = result_iter.next().unwrap().unwrap();
+            let (id, ipc_message) = match result_iter.next().unwrap() {
+                platform::OsIpcSelectionResult::DataReceived(id, ipc_message) => (id, ipc_message),
+                platform::OsIpcSelectionResult::ChannelClosed(id) => {
+                    panic!("OsIpcSelectionResult::unwrap(): receiver ID {id} was closed!")
+                },
+            };
             assert_eq!(rx_id, id);
             assert_eq!(b"Test".as_ref(), &*ipc_message.data);
             assert!(result_iter.next().is_none());
@@ -479,13 +487,12 @@ fn receiver_set_empty() {
 
     let data: &[u8] = b"";
     tx.send(data, vec![], vec![]).unwrap();
-    let (received_id, ipc_message) = rx_set
-        .select()
-        .unwrap()
-        .into_iter()
-        .next()
-        .unwrap()
-        .unwrap();
+    let (received_id, ipc_message) = match rx_set.select().unwrap().into_iter().next().unwrap() {
+        platform::OsIpcSelectionResult::DataReceived(id, ipc_message) => (id, ipc_message),
+        platform::OsIpcSelectionResult::ChannelClosed(id) => {
+            panic!("OsIpcSelectionResult::unwrap(): receiver ID {id} was closed!")
+        },
+    };
     assert_eq!(received_id, rx_id);
     assert!(ipc_message.data.is_empty());
 }
@@ -543,7 +550,12 @@ fn receiver_set_medium_data() {
     let (mut received0, mut received1) = (false, false);
     while !received0 || !received1 {
         for result in rx_set.select().unwrap().into_iter() {
-            let (received_id, mut ipc_message) = result.unwrap();
+            let (received_id, mut ipc_message) = match result {
+                platform::OsIpcSelectionResult::DataReceived(id, ipc_message) => (id, ipc_message),
+                platform::OsIpcSelectionResult::ChannelClosed(id) => {
+                    panic!("OsIpcSelectionResult::unwrap(): receiver ID {id} was closed!")
+                },
+            };
             ipc_message.data.truncate(get_max_fragment_size());
             assert!(received_id == rx0_id || received_id == rx1_id);
             if received_id == rx0_id {
@@ -587,7 +599,12 @@ fn receiver_set_big_data() {
     let (mut received0, mut received1) = (false, false);
     while !received0 || !received1 {
         for result in rx_set.select().unwrap().into_iter() {
-            let (received_id, mut ipc_message) = result.unwrap();
+            let (received_id, mut ipc_message) = match result {
+                platform::OsIpcSelectionResult::DataReceived(id, ipc_message) => (id, ipc_message),
+                platform::OsIpcSelectionResult::ChannelClosed(id) => {
+                    panic!("OsIpcSelectionResult::unwrap(): receiver ID {id} was closed!")
+                },
+            };
             ipc_message.data.truncate(1024 * 1024);
             assert!(received_id == rx0_id || received_id == rx1_id);
             if received_id == rx0_id {
