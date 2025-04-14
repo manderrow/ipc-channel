@@ -26,7 +26,7 @@ use std::mem::{self, MaybeUninit};
 use std::ops::{Deref, DerefMut};
 use std::ptr::{self, NonNull};
 use std::slice;
-use std::sync::RwLock;
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 mod mach_sys;
@@ -349,11 +349,11 @@ enum SendData<'a> {
     OutOfLine(Option<OsIpcSharedMemory>),
 }
 
-static MAX_INLINE_SIZE: RwLock<usize> = RwLock::new(usize::MAX);
+static MAX_INLINE_SIZE: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 impl<'a> From<&'a [u8]> for SendData<'a> {
     fn from(data: &'a [u8]) -> SendData<'a> {
-        let max_inline_size = *MAX_INLINE_SIZE.read().unwrap();
+        let max_inline_size = MAX_INLINE_SIZE.load(std::sync::atomic::Ordering::SeqCst);
         if data.len() >= max_inline_size {
             // Convert the data payload into a shared memory region to avoid exceeding
             // any message size limits.
@@ -571,13 +571,7 @@ impl OsIpcSender {
             std::alloc::dealloc(message.cast::<u8>().as_ptr(), layout);
             if os_result == MACH_SEND_TOO_LARGE && data.is_inline() {
                 let inline_data = data.inline_data();
-                {
-                    let mut max_inline_size = MAX_INLINE_SIZE.write().unwrap();
-                    let inline_len = inline_data.len();
-                    if inline_len < *max_inline_size {
-                        *max_inline_size = inline_len;
-                    }
-                }
+                MAX_INLINE_SIZE.fetch_min(inline_data.len(), std::sync::atomic::Ordering::SeqCst);
                 return self.send(inline_data, ports, shared_memory_regions);
             }
             if os_result != MACH_MSG_SUCCESS {
