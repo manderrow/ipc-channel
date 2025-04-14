@@ -216,7 +216,7 @@ impl OsIpcSender {
             {
                 return Err(UnixError::last());
             }
-            Ok(socket_sendbuf_size.try_into().unwrap())
+            Ok(socket_sendbuf_size.try_into().expect("getsockopt should \"return\" a non-negative size"))
         }
     }
 
@@ -510,7 +510,7 @@ impl OsIpcReceiverSet {
     }
 
     pub fn add(&mut self, receiver: OsIpcReceiver) -> Result<u64, UnixError> {
-        let last_index = self.incrementor.next().unwrap();
+        let last_index = self.incrementor.next().expect("should not run out of u64 values");
         let fd = receiver.consume_fd();
         let fd_token = Token(fd as usize);
         let poll_entry = PollEntry { id: last_index, fd };
@@ -747,7 +747,7 @@ struct BackingStore {
 impl BackingStore {
     pub fn new(length: usize) -> BackingStore {
         let count = SHM_COUNT.fetch_add(1, Ordering::Relaxed);
-        let timestamp = UNIX_EPOCH.elapsed().unwrap();
+        let timestamp = UNIX_EPOCH.elapsed().expect("time should not run backwards");
         let name = CString::new(format!(
             "/ipc-channel-shared-memory.{}.{}.{}.{}",
             count,
