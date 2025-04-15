@@ -22,6 +22,8 @@ pub fn build(b: *std.Build) void {
         .root_module = lib_mod,
     });
 
+    b.installArtifact(lib_unit_tests);
+
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
     const test_step = b.step("test", "Run unit tests");
