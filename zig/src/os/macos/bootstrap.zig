@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const mach = @import("mach.zig");
+const util = @import("../../util.zig");
 
 pub const ErrorCode = enum(std.c.kern_return_t) {
     NOT_PRIVILEGED = 1100,
@@ -14,24 +15,37 @@ pub const ErrorCode = enum(std.c.kern_return_t) {
 
 pub fn register2(bp: mach.Port, service_name: [*:0]const u8, sp: mach.Port, flags: u64) !void {
     const rt = bootstrap_register2(bp, service_name, sp, flags);
-    if (rt == ErrorCode.NAME_IN_USE) {
-        return error.NameInUse;
+    if (rt == .BOOTSTRAP_NAME_IN_USE) {
+        return error.AlreadyExists;
     }
-    if (rt == ErrorCode.NOT_PRIVILEGED) {
+    if (rt == .BOOTSTRAP_NOT_PRIVILEGED) {
         return error.AccessDenied;
     }
-    try mach.checkKernOrMachReturn(rt);
+    try mach.checkKernOrMachReturn(@enumFromInt(@intFromEnum(rt)));
 }
+
+pub fn look_up(bp: mach.Port, service_name: [*:0]const u8) !mach.Port {
+    var sp: mach.Port = undefined;
+    const rt = bootstrap_look_up(bp, service_name, &sp);
+    if (rt == .BOOTSTRAP_UNKNOWN_SERVICE) {
+        return error.NotFound;
+    }
+    try mach.checkKernOrMachReturn(@enumFromInt(@intFromEnum(rt)));
+    std.debug.assert(!sp.isNull());
+    return sp;
+}
+
+const return_t = util.MergeEnums(mach.kern_or_mach_msg_return_t, null, ErrorCode, "BOOTSTRAP_");
 
 pub extern "C" fn bootstrap_register2(
     bp: mach.Port,
     service_name: [*:0]const u8,
     sp: mach.Port,
     flags: u64,
-) mach.kern_or_mach_msg_return_t;
+) return_t;
 
 pub extern "C" fn bootstrap_look_up(
     bp: mach.Port,
     service_name: [*:0]const u8,
     sp: *mach.Port,
-) mach.kern_or_mach_msg_return_t;
+) return_t;
