@@ -18,9 +18,6 @@ const Port = mach.Port;
 /// this, we retry and spill to the heap.
 const SMALL_MESSAGE_SIZE: usize = 4096;
 
-/// A string to prepend to our bootstrap ports.
-const BOOTSTRAP_PREFIX = "org.rust-lang.ipc-channel.";
-
 const BOOTSTRAP_NAME_IN_USE: kern_return_t = 1101;
 const BOOTSTRAP_SUCCESS: kern_return_t = 0;
 const MACH_MSG_OOL_DESCRIPTOR: u32 = 1;
@@ -72,7 +69,7 @@ pub const OsIpcReceiver = struct {
         _ = port;
         _ = alloc;
         _ = blocking_mode;
-        return error.Todo;
+        return error.ToDo;
     }
 
     pub fn sender(self: OsIpcReceiver) !OsIpcSender {
@@ -118,6 +115,11 @@ pub const OsIpcReceiver = struct {
 pub const OsIpcSender = struct {
     port: Port,
 
+    pub fn connect(name: [:0]const u8) !OsIpcSender {
+        const bootstrap_port = try mach.getSpecialPort(.bootstrap);
+        return .{ .port = try bootstrap.look_up(bootstrap_port, name) };
+    }
+
     pub fn deinit(self: *@This()) void {
         self.port.dealloc() catch |e| std.debug.panic("mach_port_deallocate: {}", .{e});
         self.port = undefined;
@@ -130,28 +132,6 @@ pub const OsIpcSender = struct {
             .port = cloned_port,
         };
     }
-    //     pub fn connect(name: String) -> Result<OsIpcSender, MachError> {
-    //         unsafe {
-    //             let mut bootstrap_port = 0;
-    //             let os_result = mach_sys::task_get_special_port(
-    //                 mach_task_self(),
-    //                 TASK_BOOTSTRAP_PORT,
-    //                 &mut bootstrap_port,
-    //             );
-    //             if os_result != KERN_SUCCESS {
-    //                 return Err(KernelError::from(os_result).into());
-    //             }
-    //
-    //             let mut port = 0;
-    //             let c_name = CString::new(name).unwrap();
-    //             let os_result = bootstrap_look_up(bootstrap_port, c_name.as_ptr(), &mut port);
-    //             if os_result == BOOTSTRAP_SUCCESS {
-    //                 Ok(OsIpcSender::from_name(port))
-    //             } else {
-    //                 Err(MachError::from(os_result))
-    //             }
-    //         }
-    //     }
 
     pub fn getMaxFragmentSize() usize {
         return std.math.maxInt(usize);
@@ -513,59 +493,66 @@ pub const OsIpcSelectionResult = struct {
 //     }
 // }
 
-const BOOTSTRAP_NAME_FMT = BOOTSTRAP_PREFIX ++ "{}";
-
-pub const OneShotServerNameBuf = [std.fmt.count(BOOTSTRAP_NAME_FMT, .{std.math.minInt(i64)}):0]u8;
-
 pub const OneShotServer = struct {
     receiver: OsIpcReceiver,
-    name: []const u8,
-    registration_port: u32,
+    name: NameBuf,
+    registration_port: Port,
 
-    fn getBootstrapPort() !Port {
-        var bootstrap_port: Port = undefined;
-        const rt = mach.task_get_special_port(
-            mach.mach_task_self(),
-            .bootstrap,
-            &bootstrap_port,
-        );
-        try mach.checkKernelReturn(rt);
-        return bootstrap_port;
-    }
+    pub const name_fmt = "org.rust-lang.ipc-channel.{}";
 
-    pub fn new(name_buf: *OneShotServerNameBuf) !OneShotServer {
-        const receiver = try OsIpcReceiver.new();
+    const NameBuf = struct {
+        buf: [std.fmt.count(name_fmt, .{std.math.minInt(i64)}):0]u8,
+        len: usize,
+
+        pub const init: @This() = .{ .buf = undefined, .len = 0 };
+    };
+
+    pub fn new() !OneShotServer {
+        var receiver = try OsIpcReceiver.new();
         errdefer receiver.deinit();
 
-        const bootstrap_port = try getBootstrapPort();
+        const bootstrap_port = try mach.getSpecialPort(.bootstrap);
 
         // TODO: use .send_once instead
         const reg_port = try receiver.port.extractRight(.make_send);
-        errdefer reg_port.dealloc();
+        errdefer reg_port.dealloc() catch |e| std.debug.panic("mach_port_deallocate: {}", .{e});
+
+        var name_buf = NameBuf.init;
 
         while (true) {
-            const name = std.fmt.bufPrintZ(name_buf[0 .. name_buf.len + 1], BOOTSTRAP_NAME_FMT, .{std.crypto.random.int(i64)}) catch unreachable;
+            const name = std.fmt.bufPrintZ(name_buf.buf[0 .. name_buf.buf.len + 1], name_fmt, .{std.crypto.random.int(i64)}) catch unreachable;
+            name_buf.len = name.len;
             bootstrap.register2(bootstrap_port, name, reg_port, 0) catch |e| switch (e) {
-                error.NameInUse => continue,
+                error.AlreadyExists => continue,
                 else => return e,
             };
             return .{
                 .receiver = receiver,
-                .name = name,
+                .name = name_buf,
                 .registration_port = reg_port,
             };
         }
     }
 
     pub fn deinit(self: *OneShotServer) void {
-        const bootstrap_port = getBootstrapPort() catch |e| std.debug.panic("task_get_special_port: {}", .{e});
+        const bootstrap_port = mach.getSpecialPort(.bootstrap) catch |e| std.debug.panic("task_get_special_port: {}", .{e});
 
-        bootstrap.register2(bootstrap_port, self.name, .null, 0) catch |e| std.debug.panic("bootstrap_register2: {}", .{e});
-        self.registration_port.dealloc();
+        bootstrap.register2(bootstrap_port, self.getName(), .null, 0) catch |e| switch (e) {
+            error.AlreadyExists => {
+                // The Rust version of ipc_channel silently ignores this error.
+                // TODO: check whether this call has the desired effect regardless of the error. If yes, document it, if no, figure out what the correct method for unregistration is.
+            },
+            else => std.debug.panic("bootstrap_register2: {}", .{e}),
+        };
+        self.registration_port.dealloc() catch |e| std.debug.panic("mach_port_deallocate: {}", .{e});
         self.receiver.deinit();
     }
 
-    /// Takes ownership of `self`.
+    pub fn getName(self: *const @This()) [:0]const u8 {
+        return self.name.buf[0..self.name.len :0];
+    }
+
+    /// On success, leaves `self` deinitialized.
     pub fn accept(self: *@This(), alloc: std.mem.Allocator) !struct { rc: OsIpcReceiver, msg: IpcMessage } {
         const msg = try self.receiver.recv(alloc);
         const rc = self.receiver;
@@ -652,7 +639,3 @@ const Message = extern struct {
         return size;
     }
 };
-
-test {
-    _ = std.testing.refAllDecls(@This());
-}

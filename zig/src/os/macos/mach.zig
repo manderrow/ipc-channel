@@ -577,6 +577,18 @@ pub extern "C" fn task_get_special_port(
     special_port: *Port,
 ) kern_return_t;
 
+// TODO: document whether the returned ports need to be freed
+pub fn getSpecialPort(name: task_special_port_t) !Port {
+    var port: Port = undefined;
+    const rt = task_get_special_port(
+        mach_task_self(),
+        name,
+        &port,
+    );
+    try checkKernelReturn(rt);
+    return port;
+}
+
 pub extern "C" fn vm_allocate(
     target_task: std.c.vm_map_t,
     address: **anyopaque,
