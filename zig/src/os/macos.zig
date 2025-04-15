@@ -48,7 +48,7 @@ pub const OsIpcReceiver = struct {
     port: Port,
 
     pub fn new() !OsIpcReceiver {
-        const port = try Port.alloc(.RIGHT_RECEIVE);
+        const port = try Port.alloc(.recv);
         var limits: mach.mach_port_limits = .{
             .mpl_qlimit = MACH_PORT_QLIMIT_MAX,
         };
@@ -62,14 +62,119 @@ pub const OsIpcReceiver = struct {
 
     pub fn deinit(self: *OsIpcReceiver) void {
         defer self.port = .null;
-        self.port.release(.RIGHT_RECEIVE) catch |e| std.debug.panic("mach_port_mod_refs: {}", .{e});
+        self.port.release(.recv) catch |e| std.debug.panic("mach_port_mod_refs: {}", .{e});
     }
 
-    pub fn select(port: OsIpcReceiver, alloc: std.mem.Allocator, blocking_mode: BlockingMode) !OsIpcSelectionResult {
-        _ = port;
-        _ = alloc;
-        _ = blocking_mode;
-        return error.ToDo;
+    pub fn select(self: OsIpcReceiver, alloc: std.mem.Allocator, blocking_mode: BlockingMode) !OsIpcSelectionResult {
+        var buffer: [SMALL_MESSAGE_SIZE]u8 align(4) = undefined;
+        try setupReceiveBuffer(&buffer, self.port);
+        var message: *Message = @ptrCast(&buffer);
+        const flags = switch (blocking_mode) {
+            .blocking => MACH_RCV_MSG | MACH_RCV_LARGE,
+            .nonblocking => MACH_RCV_MSG | MACH_RCV_LARGE | MACH_RCV_TIMEOUT,
+            .timeout => MACH_RCV_MSG | MACH_RCV_LARGE | MACH_RCV_TIMEOUT,
+        };
+        const timeout = switch (blocking_mode) {
+            .blocking => MACH_MSG_TIMEOUT_NONE,
+            .nonblocking => 0,
+            .timeout => |duration| duration,
+        };
+        var rt: mach.mach_msg_return_t = @enumFromInt(std.c.mach_msg(
+            @ptrCast(&message.header),
+            flags,
+            0,
+            message.header.msgh_size,
+            self.port.name,
+            timeout,
+            Port.null.name,
+        ));
+
+        var allocated_buffer: std.ArrayListAlignedUnmanaged(u8, 4) = .{};
+        defer allocated_buffer.deinit(alloc);
+
+        while (true) {
+            switch (rt) {
+                .RCV_TOO_LARGE => {
+                    const max_trailer_size = @sizeOf(mach.mach_msg_max_trailer_t);
+                    // the actual size gets written into msgh_size by the kernel
+                    const actual_size = message.header.msgh_size + max_trailer_size;
+                    allocated_buffer.clearRetainingCapacity();
+                    try allocated_buffer.ensureTotalCapacityPrecise(alloc, actual_size);
+                    try setupReceiveBuffer(allocated_buffer.allocatedSlice(), self.port);
+                    message = @ptrCast(allocated_buffer.allocatedSlice());
+                    rt = @enumFromInt(std.c.mach_msg(
+                        @ptrCast(&message.header),
+                        flags,
+                        0,
+                        actual_size,
+                        self.port.name,
+                        timeout,
+                        Port.null.name,
+                    ));
+                },
+                else => {
+                    try mach.checkMachReturn(rt);
+                    break;
+                },
+            }
+        }
+
+        const local_port = message.header.msgh_local_port;
+        if (message.header.msgh_id == MACH_NOTIFY_NO_SENDERS) {
+            return .{ .id = .{ .id = local_port.name }, .event = .closed };
+        }
+
+        var descriptors: [*]mach.mach_msg_descriptor = @ptrCast(@as([*]Message, @ptrCast(message)) + 1);
+        var remaining = message.body.msgh_descriptor_count;
+
+        var ports: std.ArrayListUnmanaged(OsOpaqueIpcChannel) = .{};
+        // TODO: errdefer cleanup ports
+        while (remaining > 0 and descriptors[0].type == .port) : (remaining -= 1) {
+            const port_descriptors: [*]mach.mach_msg_port_descriptor_t = @ptrCast(descriptors);
+            try ports.append(alloc, .{
+                .port = port_descriptors[0].name,
+                .right = switch (port_descriptors[0].disposition.type) {
+                    .move_recv => .recv,
+                    .copy_send, .make_send, .move_send => .send,
+                    .make_send_once, .move_send_once => .send,
+                    else => return error.InvalidMessage,
+                },
+            });
+            descriptors = @ptrCast(port_descriptors + 1);
+        }
+
+        var shared_memory_regions: std.ArrayListUnmanaged(OsIpcSharedMemory) = .{};
+        // TODO: errdefer cleanup smrs
+        while (remaining > 0 and descriptors[0].type == .ool) : (remaining -= 1) {
+            const ool_descriptors: [*]mach.mach_msg_ool_descriptor_t = @ptrCast(descriptors);
+            try shared_memory_regions.append(alloc, .{
+                .data = @as([*]u8, @ptrCast(ool_descriptors[0].address))[0..ool_descriptors[0].size],
+            });
+            descriptors = @ptrCast(ool_descriptors + 1);
+        }
+
+        if (remaining > 0) {
+            return error.InvalidMessage;
+        }
+
+        const is_inline: *bool = @as(*bool, @ptrCast(descriptors));
+        const payload = if (is_inline.*) blk: {
+            const ptrs = getInlineSizeAndData(is_inline);
+            // TODO: if we've already allocated a buffer for the message, don't reallocate, just
+            //       wrap it up nicely and return it.
+            break :blk try alloc.dupe(u8, ptrs.data[0..ptrs.size.*]);
+        } else blk: {
+            break :blk (shared_memory_regions.pop() orelse return error.InvalidMessage).data;
+        };
+
+        return .{
+            .id = .{ .id = local_port.name },
+            .event = .{ .received = .{
+                .data = payload,
+                .channels = try ports.toOwnedSlice(alloc),
+                .shared_memory_regions = try shared_memory_regions.toOwnedSlice(alloc),
+            } },
+        };
     }
 
     pub fn sender(self: OsIpcReceiver) !OsIpcSender {
@@ -82,7 +187,7 @@ pub const OsIpcReceiver = struct {
             MACH_NOTIFY_NO_SENDERS,
             0,
             self.port,
-            .MAKE_SEND_ONCE,
+            .make_send_once,
         );
     }
 
@@ -112,6 +217,13 @@ pub const OsIpcReceiver = struct {
     }
 };
 
+fn getInlineSizeAndData(is_inline: *bool) struct { size: *align(1) usize, data: [*]u8 } {
+    const padding_start: [*]u8 = @ptrCast(@as([*]bool, @ptrCast(is_inline)) + 1);
+    const padding_count = Message.payloadPadding(@intFromPtr(padding_start));
+    const data_size: [*]align(1) usize = @ptrCast(padding_start + padding_count);
+    return .{ .size = &data_size[0], .data = @ptrCast(data_size + 1) };
+}
+
 pub const OsIpcSender = struct {
     port: Port,
 
@@ -121,13 +233,13 @@ pub const OsIpcSender = struct {
     }
 
     pub fn deinit(self: *@This()) void {
-        self.port.dealloc() catch |e| std.debug.panic("mach_port_deallocate: {}", .{e});
+        self.port.release(.send) catch |e| std.debug.panic("mach_port_deallocate: {}", .{e});
         self.port = undefined;
     }
 
     pub fn clone(self: @This()) KernelError!OsIpcSender {
         var cloned_port = self.port;
-        try cloned_port.addRef(.RIGHT_SEND);
+        try cloned_port.addRef(.send);
         return .{
             .port = cloned_port,
         };
@@ -170,7 +282,7 @@ pub const OsIpcSender = struct {
         message.* = .{
             .header = .{
                 .msgh_bits = .{
-                    .remote = .COPY_SEND,
+                    .remote = .copy_send,
                     .complex = true,
                 },
                 .msgh_size = size,
@@ -191,8 +303,8 @@ pub const OsIpcSender = struct {
                     .receiver => |rc| rc.port,
                 },
                 .disposition = .{ .type = switch (port) {
-                    .sender => .MOVE_SEND,
-                    .receiver => .MOVE_RECEIVE,
+                    .sender => .move_send,
+                    .receiver => .move_recv,
                 } },
             };
         }
@@ -201,7 +313,7 @@ pub const OsIpcSender = struct {
             dest.* = .{
                 .address = smr.data.ptr,
                 .size = std.math.cast(mach.mach_msg_size_t, smr.data.len) orelse return error.SendTooLarge,
-                .deallocate = true,
+                .deallocate = 1,
                 .copy = .VIRTUAL_COPY,
             };
         }
@@ -211,7 +323,7 @@ pub const OsIpcSender = struct {
                 shared_memory_descriptor_dest[shared_memory_descriptor_dest.len - 1] = .{
                     .address = smr.data.ptr,
                     .size = std.math.cast(mach.mach_msg_size_t, smr.data.len) orelse return error.SendTooLarge,
-                    .deallocate = true,
+                    .deallocate = 1,
                     .copy = .VIRTUAL_COPY,
                 };
             },
@@ -221,19 +333,13 @@ pub const OsIpcSender = struct {
         is_inline_dest.* = send_data == .@"inline";
 
         if (send_data == .@"inline") {
+            // TODO: what sort of paranoia is this for?
             // Zero out the last word for paranoia's sake.
             @memset(message_buf[size - 4 ..], 0);
 
-            const data_size = send_data.@"inline".len;
-            const padding_start: [*]u8 = @ptrCast(@as([*]bool, @ptrCast(is_inline_dest)) + 1);
-            const padding_count = Message.payloadPadding(@intFromPtr(padding_start));
-            // Zero out padding
-            @memset(padding_start[0..padding_count], 0);
-            const data_size_dest: [*]align(1) usize = @ptrCast(padding_start + padding_count);
-            data_size_dest[0] = data_size;
-
-            const data_dest: [*]u8 = @ptrCast(data_size_dest + 1);
-            @memcpy(data_dest, send_data.@"inline");
+            const ptrs = getInlineSizeAndData(is_inline_dest);
+            ptrs.size.* = send_data.@"inline".len;
+            @memcpy(ptrs.data, send_data.@"inline");
         }
 
         std.debug.assert(message.header.msgh_size == size);
@@ -287,18 +393,20 @@ pub const OsIpcChannel = union(enum) {
 
 pub const OsOpaqueIpcChannel = struct {
     port: Port,
+    right: mach.mach_port_right_t,
 
     pub fn deinit(self: *OsOpaqueIpcChannel) void {
-        self.port.dealloc() catch |e| std.debug.panic("mach_port_deallocate: {}", .{e});
+        self.port.release(self.right) catch |e| std.debug.panic("release({}): {}", .{ self.port.name, e });
+        self.* = undefined;
     }
 
-    pub fn toSender(self: *OsOpaqueIpcChannel) error{WrongType}!OsIpcSender {
-        // TODO: check type
+    pub fn asSender(self: OsOpaqueIpcChannel) error{WrongType}!OsIpcSender {
+        if (self.right != .send) return error.WrongType;
         return .{ .port = self.port };
     }
 
-    pub fn toReceiver(self: *OsOpaqueIpcChannel) error{WrongType}!OsIpcReceiver {
-        // TODO: check type
+    pub fn asReceiver(self: OsOpaqueIpcChannel) error{WrongType}!OsIpcReceiver {
+        if (self.right != .recv) return error.WrongType;
         return .{ .port = self.port };
     }
 };
@@ -309,16 +417,18 @@ pub const OsIpcReceiverSet = struct {
 
     pub fn new() !@This() {
         return .{
-            .port = try Port.alloc(.RIGHT_PORT_SET),
+            .port = try Port.alloc(.port_set),
             .ports = .{},
         };
     }
 
-    pub fn deinit(self: *@This()) !void {
+    pub fn deinit(self: *@This(), alloc: std.mem.Allocator) !void {
         for (self.ports.items) |port| {
-            port.release(.RIGHT_RECEIVE);
+            port.release(.recv) catch |e| std.debug.panic("release({}): {}", .{ self.port.name, e });
         }
-        try self.port.release(.RIGHT_PORT_SET);
+        self.ports.deinit(alloc);
+        try self.port.release(.port_set);
+        self.* = undefined;
     }
 
     /// The set takes ownership of `receiver`.
@@ -337,7 +447,7 @@ const BlockingMode = union(enum) {
     blocking,
     nonblocking,
     /// Measured in milliseconds.
-    timeout: u64,
+    timeout: c_uint,
 };
 
 pub const OsIpcReceiverSetPortId = struct { id: u64 };
@@ -349,149 +459,6 @@ pub const OsIpcSelectionResult = struct {
         received: IpcMessage,
     },
 };
-
-// fn select(
-//     port: mach_port_t,
-//     blocking_mode: BlockingMode,
-// ) -> Result<OsIpcSelectionResult, MachError> {
-//     debug_assert!(port != MACH_PORT_NULL);
-//     unsafe {
-//         let mut buffer = [MaybeUninit::<u8>::uninit(); SMALL_MESSAGE_SIZE];
-//         let mut allocated_buffer_and_layout = None;
-//         setup_receive_buffer(&mut buffer, port);
-//         let mut message = NonNull::from(&mut buffer).cast::<Message>();
-//         let (flags, timeout) = match blocking_mode {
-//             BlockingMode::Blocking => (MACH_RCV_MSG | MACH_RCV_LARGE, MACH_MSG_TIMEOUT_NONE),
-//             BlockingMode::Nonblocking => (MACH_RCV_MSG | MACH_RCV_LARGE | MACH_RCV_TIMEOUT, 0),
-//             BlockingMode::Timeout(duration) => duration
-//                 .as_millis()
-//                 .try_into()
-//                 .map(|ms| (MACH_RCV_MSG | MACH_RCV_LARGE | MACH_RCV_TIMEOUT, ms))
-//                 .unwrap_or((MACH_RCV_MSG | MACH_RCV_LARGE, MACH_MSG_TIMEOUT_NONE)),
-//         };
-//         match mach_sys::mach_msg(
-//             ptr::addr_of_mut!((*message.as_ptr()).header),
-//             flags,
-//             0,
-//             *ptr::addr_of_mut!((*message.as_ptr()).header.msgh_size),
-//             port,
-//             timeout,
-//             MACH_PORT_NULL,
-//         ) {
-//             MACH_RCV_TOO_LARGE => {
-//                 println!("hit allocated buffer path");
-//                 let max_trailer_size =
-//                     mem::size_of::<mach_sys::mach_msg_max_trailer_t>() as mach_sys::mach_msg_size_t;
-//                 // the actual size gets written into msgh_size by the kernel
-//                 let mut actual_size =
-//                     *ptr::addr_of_mut!((*message.as_ptr()).header.msgh_size) + max_trailer_size;
-//                 loop {
-//                     let Ok(layout) = std::alloc::Layout::array::<u8>(
-//                         actual_size.try_into().map_err(|_| MachError::RcvTooLarge)?,
-//                     ) else {
-//                         return Err(MachError::RcvTooLarge);
-//                     };
-//                     let Some(allocated_buffer) = NonNull::new(std::alloc::alloc(layout)) else {
-//                         std::alloc::handle_alloc_error(layout);
-//                     };
-//                     allocated_buffer_and_layout = Some((allocated_buffer, layout));
-//                     setup_receive_buffer(
-//                         NonNull::slice_from_raw_parts(
-//                             allocated_buffer.cast::<MaybeUninit<u8>>(),
-//                             actual_size as usize,
-//                         )
-//                         .as_mut(),
-//                         port,
-//                     );
-//                     message = allocated_buffer.cast::<Message>();
-//                     match mach_sys::mach_msg(
-//                         ptr::addr_of_mut!((*message.as_ptr()).header),
-//                         flags,
-//                         0,
-//                         actual_size,
-//                         port,
-//                         timeout,
-//                         MACH_PORT_NULL,
-//                     ) {
-//                         MACH_MSG_SUCCESS => break,
-//                         MACH_RCV_TOO_LARGE => {
-//                             actual_size = *ptr::addr_of_mut!((*message.as_ptr()).header.msgh_size)
-//                                 + max_trailer_size;
-//                             std::alloc::dealloc(allocated_buffer.as_ptr(), layout);
-//                             continue;
-//                         },
-//                         os_result => {
-//                             std::alloc::dealloc(allocated_buffer.as_ptr(), layout);
-//                             return Err(MachError::from(os_result));
-//                         },
-//                     }
-//                 }
-//             },
-//             MACH_MSG_SUCCESS => {},
-//             os_result => return Err(MachError::from(os_result)),
-//         }
-//
-//         let local_port = *ptr::addr_of_mut!((*message.as_ptr()).header.msgh_local_port);
-//         if *ptr::addr_of_mut!((*message.as_ptr()).header.msgh_id) == MACH_NOTIFY_NO_SENDERS {
-//             return Ok(OsIpcSelectionResult::ChannelClosed(local_port as u64));
-//         }
-//
-//         let (mut ports, mut shared_memory_regions) = (Vec::new(), Vec::new());
-//         let mut port_descriptor = message.offset(1).cast::<mach_msg_port_descriptor_t>();
-//         let mut descriptors_remaining =
-//             *ptr::addr_of_mut!((*message.as_ptr()).body.msgh_descriptor_count);
-//         while descriptors_remaining > 0 {
-//             if port_descriptor.as_ref().type_() != MACH_MSG_PORT_DESCRIPTOR {
-//                 break;
-//             }
-//             ports.push(OsOpaqueIpcChannel::from_name(port_descriptor.as_ref().name));
-//             port_descriptor = port_descriptor.offset(1);
-//             descriptors_remaining -= 1;
-//         }
-//
-//         let mut shared_memory_descriptor = port_descriptor.cast::<mach_msg_ool_descriptor_t>();
-//         while descriptors_remaining > 0 {
-//             debug_assert!(shared_memory_descriptor.as_ref().type_() == MACH_MSG_OOL_DESCRIPTOR);
-//             shared_memory_regions.push(OsIpcSharedMemory::from_raw_parts(
-//                 shared_memory_descriptor.as_ref().address as *mut u8,
-//                 shared_memory_descriptor.as_ref().size as usize,
-//             ));
-//             shared_memory_descriptor = shared_memory_descriptor.offset(1);
-//             descriptors_remaining -= 1;
-//         }
-//
-//         let has_inline_data_ptr = shared_memory_descriptor.cast::<bool>();
-//         let has_inline_data = *has_inline_data_ptr.as_ref();
-//         let payload = if has_inline_data {
-//             let padding_start = has_inline_data_ptr.offset(1).cast::<u8>();
-//             let padding_count = Message::payload_padding(padding_start.addr().get());
-//             let payload_size_ptr = padding_start.add(padding_count).cast::<usize>();
-//             let payload_size = *payload_size_ptr.as_ref();
-//             let max_payload_size = message.addr().get()
-//                 + (message.as_ref().header.msgh_size as usize)
-//                 - shared_memory_descriptor.addr().get();
-//             assert!(payload_size <= max_payload_size);
-//             let payload_ptr = payload_size_ptr.offset(1).cast::<u8>();
-//             NonNull::slice_from_raw_parts(payload_ptr, payload_size)
-//                 .as_ref()
-//                 .to_vec()
-//         } else {
-//             let ool_payload = shared_memory_regions
-//                 .pop()
-//                 .expect("Missing OOL shared memory region");
-//             ool_payload.to_vec()
-//         };
-//
-//         if let Some((allocated_buffer, layout)) = allocated_buffer_and_layout {
-//             std::alloc::dealloc(allocated_buffer.cast().as_ptr(), layout)
-//         }
-//
-//         Ok(OsIpcSelectionResult::DataReceived(
-//             local_port as u64,
-//             IpcMessage::new(payload, ports, shared_memory_regions),
-//         ))
-//     }
-// }
 
 pub const OneShotServer = struct {
     receiver: OsIpcReceiver,
@@ -515,7 +482,7 @@ pub const OneShotServer = struct {
 
         // TODO: use .send_once instead
         const reg_port = try receiver.port.extractRight(.make_send);
-        errdefer reg_port.dealloc() catch |e| std.debug.panic("mach_port_deallocate: {}", .{e});
+        errdefer reg_port.release(.send) catch |e| std.debug.panic("mach_port_deallocate: {}", .{e});
 
         var name_buf = NameBuf.init;
 
@@ -544,8 +511,9 @@ pub const OneShotServer = struct {
             },
             else => std.debug.panic("bootstrap_register2: {}", .{e}),
         };
-        self.registration_port.dealloc() catch |e| std.debug.panic("mach_port_deallocate: {}", .{e});
+        self.registration_port.release(.send) catch |e| std.debug.panic("mach_port_deallocate: {}", .{e});
         self.receiver.deinit();
+        self.* = undefined;
     }
 
     pub fn getName(self: *const @This()) [:0]const u8 {
@@ -556,7 +524,7 @@ pub const OneShotServer = struct {
     pub fn accept(self: *@This(), alloc: std.mem.Allocator) !struct { rc: OsIpcReceiver, msg: IpcMessage } {
         const msg = try self.receiver.recv(alloc);
         const rc = self.receiver;
-        self.* = undefined;
+        self.deinit();
         return .{ .rc = rc, .msg = msg };
     }
 };
@@ -601,14 +569,14 @@ pub const OsIpcSharedMemory = struct {
     }
 };
 
-fn setupReceiveBuffer(buffer: []u8, port: Port) !void {
+fn setupReceiveBuffer(buffer: []align(4) u8, port: Port) !void {
     const header: *mach.mach_msg_header_t = @ptrCast(buffer);
     header.* = .{
-        .msgh_bits = 0,
-        .msgh_size = std.math.cast(c_uint, buffer.len) orelse return error{TooLarge},
-        .msgh_remote_port = 0,
+        .msgh_bits = .{},
+        .msgh_size = std.math.cast(c_uint, buffer.len) orelse return error.TooLarge,
+        .msgh_remote_port = .null,
         .msgh_local_port = port,
-        .msgh_voucher_port = 0,
+        .msgh_voucher_port = .null,
         .msgh_id = 0,
     };
 }

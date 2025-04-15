@@ -16,17 +16,19 @@ pub const SharedMemory = os.OsIpcSharedMemory;
 
 pub const IpcMessage = struct {
     data: []u8,
-    os_ipc_channels: []OpaqueChannel,
-    os_ipc_shared_memory_regions: []SharedMemory,
+    channels: []OpaqueChannel,
+    shared_memory_regions: []SharedMemory,
 
     pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
         alloc.free(self.data);
-        for (self.os_ipc_channels) |*chan| {
+        for (self.channels) |*chan| {
             chan.deinit();
         }
-        for (self.os_ipc_shared_memory_regions) |*smr| {
+        alloc.free(self.channels);
+        for (self.shared_memory_regions) |*smr| {
             smr.deinit();
         }
+        alloc.free(self.shared_memory_regions);
     }
 };
 
@@ -37,8 +39,8 @@ fn expectEqualStringMessages(
     msg: IpcMessage,
 ) !void {
     try std.testing.expectEqualStrings(expected_data, msg.data);
-    try std.testing.expectEqual(expected_channel_count, msg.os_ipc_channels.len);
-    try std.testing.expectEqual(expected_shared_memory_region_count, msg.os_ipc_shared_memory_regions.len);
+    try std.testing.expectEqual(expected_channel_count, msg.channels.len);
+    try std.testing.expectEqual(expected_shared_memory_region_count, msg.shared_memory_regions.len);
 }
 
 test "simple" {
@@ -74,9 +76,8 @@ test "sender transfer" {
         var ipc_message = try super.rc.recv(alloc);
         defer ipc_message.deinit(alloc);
 
-        try std.testing.expectEqual(1, ipc_message.os_ipc_channels.len);
-        var sub_tx = try ipc_message.os_ipc_channels[ipc_message.os_ipc_channels.len - 1].toSender();
-        defer sub_tx.deinit();
+        try std.testing.expectEqual(1, ipc_message.channels.len);
+        var sub_tx = try ipc_message.channels[ipc_message.channels.len - 1].asSender();
 
         try sub_tx.send(alloc, data, &.{}, &.{});
     }
