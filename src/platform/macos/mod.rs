@@ -708,7 +708,6 @@ fn select(
             MACH_PORT_NULL,
         ) {
             MACH_RCV_TOO_LARGE => {
-                println!("hit allocated buffer path");
                 let max_trailer_size =
                     mem::size_of::<mach_sys::mach_msg_max_trailer_t>() as mach_sys::mach_msg_size_t;
                 // the actual size gets written into msgh_size by the kernel
