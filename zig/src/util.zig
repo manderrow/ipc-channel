@@ -1,7 +1,5 @@
 const std = @import("std");
 
-pub const alloc = std.heap.smp_allocator;
-
 pub fn MergeEnums(comptime A: type, comptime a_prefix: ?[]const u8, comptime B: type, comptime b_prefix: ?[]const u8) type {
     comptime {
         const aInfo = @typeInfo(A).@"enum";

@@ -6,7 +6,6 @@ const util = @import("../util.zig");
 const bootstrap = @import("macos/bootstrap.zig");
 const mach = @import("macos/mach.zig");
 
-const alloc = util.alloc;
 const IpcMessage = os.IpcMessage;
 
 const kern_return_t = mach.kern_return_t;
@@ -64,13 +63,14 @@ pub const OsIpcReceiver = struct {
         return .{ .port = port };
     }
 
-    pub fn deinit(self: *OsIpcReceiver) KernelError!void {
+    pub fn deinit(self: *OsIpcReceiver) void {
         defer self.port = .null;
-        try self.port.release(.RIGHT_RECEIVE);
+        self.port.release(.RIGHT_RECEIVE) catch |e| std.debug.panic("mach_port_mod_refs: {}", .{e});
     }
 
-    pub fn select(port: OsIpcReceiver, blocking_mode: BlockingMode) !OsIpcSelectionResult {
+    pub fn select(port: OsIpcReceiver, alloc: std.mem.Allocator, blocking_mode: BlockingMode) !OsIpcSelectionResult {
         _ = port;
+        _ = alloc;
         _ = blocking_mode;
         return error.Todo;
     }
@@ -150,34 +150,35 @@ pub const OsIpcReceiver = struct {
 
     fn recv_with_blocking_mode(
         self: OsIpcReceiver,
+        alloc: std.mem.Allocator,
         blocking_mode: BlockingMode,
     ) !IpcMessage {
-        const result = try self.select(blocking_mode);
+        const result = try self.select(alloc, blocking_mode);
         return switch (result.event) {
             .received => |msg| msg,
             .closed => error.MACH_NOTIFY_NO_SENDERS,
         };
     }
 
-    pub fn recv(self: OsIpcReceiver) !IpcMessage {
-        return self.recv_with_blocking_mode(.blocking);
+    pub fn recv(self: OsIpcReceiver, alloc: std.mem.Allocator) !IpcMessage {
+        return self.recv_with_blocking_mode(alloc, .blocking);
     }
 
-    pub fn try_recv(self: OsIpcReceiver) !IpcMessage {
-        return self.recv_with_blocking_mode(.nonblocking);
+    pub fn try_recv(self: OsIpcReceiver, alloc: std.mem.Allocator) !IpcMessage {
+        return self.recv_with_blocking_mode(alloc, .nonblocking);
     }
 
     /// `duration` is measured in milliseconds.
-    pub fn try_recv_timeout(self: OsIpcReceiver, duration: u64) !IpcMessage {
-        self.recv_with_blocking_mode(.{ .timeout = duration });
+    pub fn try_recv_timeout(self: OsIpcReceiver, alloc: std.mem.Allocator, duration: u64) !IpcMessage {
+        self.recv_with_blocking_mode(alloc, .{ .timeout = duration });
     }
 };
 
 pub const OsIpcSender = struct {
     port: Port,
 
-    pub fn deinit(self: *@This()) KernelError!void {
-        try self.port.dealloc();
+    pub fn deinit(self: *@This()) void {
+        self.port.dealloc() catch |e| std.debug.panic("mach_port_deallocate: {}", .{e});
         self.port = undefined;
     }
 
@@ -218,20 +219,17 @@ pub const OsIpcSender = struct {
     /// Takes ownership of the elements of `ports` and `shared_memory_regions`.
     pub fn send(
         self: OsIpcSender,
+        alloc: std.mem.Allocator,
         data: []const u8,
         ports: []OsIpcChannel,
         shared_memory_regions: []OsIpcSharedMemory,
     ) !void {
         errdefer {
             for (ports) |*port| {
-                // TODO: how should we handle *de*allocation errors?
-                switch (port.*) {
-                    .sender => |sd| sd.port.dealloc() catch {},
-                    .receiver => |rd| rd.port.dealloc() catch {},
-                }
+                port.deinit();
             }
             for (shared_memory_regions) |*smr| {
-                smr.deinit() catch {};
+                smr.deinit();
             }
         }
 
@@ -331,7 +329,7 @@ pub const OsIpcSender = struct {
         if (rt == .SEND_TOO_LARGE and send_data == .@"inline") {
             _ = max_inline_size.fetchMin(send_data.@"inline".len, .seq_cst);
             // FIXME: we want to free *before* calling this again, to conserve memory.
-            return self.send(send_data.@"inline", ports, shared_memory_regions);
+            return self.send(alloc, send_data.@"inline", ports, shared_memory_regions);
         }
         try mach.checkMachReturn(rt);
     }
@@ -358,15 +356,31 @@ pub const OsIpcChannel = union(enum) {
     sender: OsIpcSender,
     receiver: OsIpcReceiver,
 
-    pub fn deinit(self: *@This()) KernelError!void {
-        return switch (self.*) {
-            .sender => |sd| sd.deinit(),
-            .receiver => |rd| rd.deinit(),
-        };
+    pub fn deinit(self: *@This()) void {
+        switch (self.*) {
+            .sender => |*sd| sd.deinit(),
+            .receiver => |*rd| rd.deinit(),
+        }
     }
 };
 
-pub const OsOpaqueIpcChannel = Port;
+pub const OsOpaqueIpcChannel = struct {
+    port: Port,
+
+    pub fn deinit(self: *OsOpaqueIpcChannel) void {
+        self.port.dealloc() catch |e| std.debug.panic("mach_port_deallocate: {}", .{e});
+    }
+
+    pub fn toSender(self: *OsOpaqueIpcChannel) error{WrongType}!OsIpcSender {
+        // TODO: check type
+        return .{ .port = self.port };
+    }
+
+    pub fn toReceiver(self: *OsOpaqueIpcChannel) error{WrongType}!OsIpcReceiver {
+        // TODO: check type
+        return .{ .port = self.port };
+    }
+};
 
 pub const OsIpcReceiverSet = struct {
     port: Port,
@@ -387,7 +401,7 @@ pub const OsIpcReceiverSet = struct {
     }
 
     /// The set takes ownership of `receiver`.
-    pub fn add(self: *@This(), receiver: OsIpcReceiver) !OsIpcReceiverSetPortId {
+    pub fn add(self: *@This(), alloc: std.mem.Allocator, receiver: OsIpcReceiver) !OsIpcReceiverSetPortId {
         try receiver.port.moveMember(self.port);
         try self.ports.append(alloc, receiver.port);
         return .{ .id = @intCast(receiver.port.name) };
@@ -594,9 +608,9 @@ pub const OsIpcSelectionResult = struct {
 pub const OsIpcSharedMemory = struct {
     data: []u8,
 
-    pub fn deinit(self: *@This()) !void {
+    pub fn deinit(self: *@This()) void {
         const rt: mach.kern_return_t = @enumFromInt(std.c.vm_deallocate(mach.mach_task_self(), @intFromPtr(self.data.ptr), self.data.len));
-        try mach.checkKernelReturn(rt);
+        mach.checkKernelReturn(rt) catch |e| std.debug.panic("vm_deallocate: {}", .{e});
     }
 
     pub fn clone(self: *@This()) !OsIpcSharedMemory {
