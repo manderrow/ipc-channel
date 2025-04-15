@@ -40,11 +40,11 @@ const MACH_SEND_MSG: i32 = 1;
 const TASK_BOOTSTRAP_PORT: i32 = 4;
 const VM_INHERIT_SHARE: std.c.vm_inherit_t = 0;
 
-pub fn channel() !struct { sd: OsIpcSender, rd: OsIpcReceiver } {
+pub fn channel() !struct { sd: OsIpcSender, rc: OsIpcReceiver } {
     const receiver = try OsIpcReceiver.new();
     const sender = try receiver.sender();
     try receiver.request_no_senders_notification();
-    return .{ .sd = sender, .rd = receiver };
+    return .{ .sd = sender, .rc = receiver };
 }
 
 pub const OsIpcReceiver = struct {
@@ -76,67 +76,8 @@ pub const OsIpcReceiver = struct {
     }
 
     pub fn sender(self: OsIpcReceiver) !OsIpcSender {
-        const result = try self.port.extractRight(.make_send);
-        return .{ .port = result[0] };
+        return .{ .port = try self.port.extractRight(.make_send) };
     }
-
-    //     fn register_bootstrap_name(&self) -> Result<(u32, String), MachError> {
-    //         let port = self.port.get();
-    //         debug_assert!(port != MACH_PORT_NULL);
-    //         unsafe {
-    //             let mut bootstrap_port = 0;
-    //             let os_result = mach_sys::task_get_special_port(
-    //                 mach_task_self(),
-    //                 TASK_BOOTSTRAP_PORT,
-    //                 &mut bootstrap_port,
-    //             );
-    //             if os_result != KERN_SUCCESS {
-    //                 return Err(KernelError::from(os_result).into());
-    //             }
-    //
-    //             let (right, acquired_right) =
-    //                 mach_port_extract_right(port, .MAKE_SEND)?;
-    //             debug_assert!(acquired_right == .PORT_SEND);
-    //
-    //             let mut os_result;
-    //             let mut name;
-    //             loop {
-    //                 name = format!("{}{}", BOOTSTRAP_PREFIX, rand::rng().random::<i64>());
-    //                 let c_name = CString::new(name.clone()).unwrap();
-    //                 os_result = bootstrap_register2(bootstrap_port, c_name.as_ptr(), right, 0);
-    //                 if os_result == BOOTSTRAP_NAME_IN_USE {
-    //                     continue;
-    //                 }
-    //                 if os_result != BOOTSTRAP_SUCCESS {
-    //                     return Err(MachError::from(os_result));
-    //                 }
-    //                 break;
-    //             }
-    //             Ok((right, name))
-    //         }
-    //     }
-    //
-    //     fn unregister_global_name(name: String) -> Result<(), MachError> {
-    //         unsafe {
-    //             let mut bootstrap_port = 0;
-    //             let os_result = mach_sys::task_get_special_port(
-    //                 mach_task_self(),
-    //                 TASK_BOOTSTRAP_PORT,
-    //                 &mut bootstrap_port,
-    //             );
-    //             if os_result != KERN_SUCCESS {
-    //                 return Err(KernelError::from(os_result).into());
-    //             }
-    //
-    //             let c_name = CString::new(name).unwrap();
-    //             let os_result = bootstrap_register2(bootstrap_port, c_name.as_ptr(), MACH_PORT_NULL, 0);
-    //             if os_result == BOOTSTRAP_SUCCESS {
-    //                 Ok(())
-    //             } else {
-    //                 Err(MachError::from(os_result))
-    //             }
-    //         }
-    //     }
 
     fn request_no_senders_notification(self: OsIpcReceiver) !void {
         std.debug.assert(!self.port.isNull());
@@ -267,7 +208,7 @@ pub const OsIpcSender = struct {
             dest.* = .{
                 .name = switch (port) {
                     .sender => |sd| sd.port,
-                    .receiver => |rd| rd.port,
+                    .receiver => |rc| rc.port,
                 },
                 .disposition = .{ .type = switch (port) {
                     .sender => .MOVE_SEND,
@@ -359,7 +300,7 @@ pub const OsIpcChannel = union(enum) {
     pub fn deinit(self: *@This()) void {
         switch (self.*) {
             .sender => |*sd| sd.deinit(),
-            .receiver => |*rd| rd.deinit(),
+            .receiver => |*rc| rc.deinit(),
         }
     }
 };
@@ -572,38 +513,66 @@ pub const OsIpcSelectionResult = struct {
 //     }
 // }
 
-// pub struct OsIpcOneShotServer {
-//     receiver: OsIpcReceiver,
-//     name: String,
-//     registration_port: u32,
-// }
-//
-// impl Drop for OsIpcOneShotServer {
-//     fn drop(&mut self) {
-//         let _ = OsIpcReceiver::unregister_global_name(std::mem::take(&mut self.name));
-//         deallocate_mach_port(self.registration_port);
-//     }
-// }
-//
-// impl OsIpcOneShotServer {
-//     pub fn new() -> Result<(OsIpcOneShotServer, String), MachError> {
-//         let receiver = OsIpcReceiver::new()?;
-//         let (registration_port, name) = receiver.register_bootstrap_name()?;
-//         Ok((
-//             OsIpcOneShotServer {
-//                 receiver,
-//                 name: name.clone(),
-//                 registration_port,
-//             },
-//             name,
-//         ))
-//     }
-//
-//     pub fn accept(self) -> Result<(OsIpcReceiver, IpcMessage), MachError> {
-//         let ipc_message = self.receiver.recv()?;
-//         Ok((self.receiver.consume(), ipc_message))
-//     }
-// }
+const BOOTSTRAP_NAME_FMT = BOOTSTRAP_PREFIX ++ "{}";
+
+pub const OneShotServerNameBuf = [std.fmt.count(BOOTSTRAP_NAME_FMT, .{std.math.minInt(i64)}):0]u8;
+
+pub const OneShotServer = struct {
+    receiver: OsIpcReceiver,
+    name: []const u8,
+    registration_port: u32,
+
+    fn getBootstrapPort() !Port {
+        var bootstrap_port: Port = undefined;
+        const rt = mach.task_get_special_port(
+            mach.mach_task_self(),
+            .bootstrap,
+            &bootstrap_port,
+        );
+        try mach.checkKernelReturn(rt);
+        return bootstrap_port;
+    }
+
+    pub fn new(name_buf: *OneShotServerNameBuf) !OneShotServer {
+        const receiver = try OsIpcReceiver.new();
+        errdefer receiver.deinit();
+
+        const bootstrap_port = try getBootstrapPort();
+
+        // TODO: use .send_once instead
+        const reg_port = try receiver.port.extractRight(.make_send);
+        errdefer reg_port.dealloc();
+
+        while (true) {
+            const name = std.fmt.bufPrintZ(name_buf[0 .. name_buf.len + 1], BOOTSTRAP_NAME_FMT, .{std.crypto.random.int(i64)}) catch unreachable;
+            bootstrap.register2(bootstrap_port, name, reg_port, 0) catch |e| switch (e) {
+                error.NameInUse => continue,
+                else => return e,
+            };
+            return .{
+                .receiver = receiver,
+                .name = name,
+                .registration_port = reg_port,
+            };
+        }
+    }
+
+    pub fn deinit(self: *OneShotServer) void {
+        const bootstrap_port = getBootstrapPort() catch |e| std.debug.panic("task_get_special_port: {}", .{e});
+
+        bootstrap.register2(bootstrap_port, self.name, .null, 0) catch |e| std.debug.panic("bootstrap_register2: {}", .{e});
+        self.registration_port.dealloc();
+        self.receiver.deinit();
+    }
+
+    /// Takes ownership of `self`.
+    pub fn accept(self: *@This(), alloc: std.mem.Allocator) !struct { rc: OsIpcReceiver, msg: IpcMessage } {
+        const msg = try self.receiver.recv(alloc);
+        const rc = self.receiver;
+        self.* = undefined;
+        return .{ .rc = rc, .msg = msg };
+    }
+};
 
 pub const OsIpcSharedMemory = struct {
     data: []u8,

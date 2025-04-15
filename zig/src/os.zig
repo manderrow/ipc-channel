@@ -44,12 +44,12 @@ test "simple" {
     const alloc = std.testing.allocator;
 
     var chan = try channel();
-    defer chan.rd.deinit();
+    defer chan.rc.deinit();
     defer chan.sd.deinit();
 
     const data = "1234567";
     try chan.sd.send(alloc, data, &.{}, &.{});
-    var ipc_message = try chan.rd.recv(alloc);
+    var ipc_message = try chan.rc.recv(alloc);
     defer ipc_message.deinit(alloc);
     try expectEqualStringMessages(data, 0, 0, ipc_message);
 }
@@ -58,11 +58,11 @@ test "sender transfer" {
     const alloc = std.testing.allocator;
 
     var super = try channel();
-    defer super.rd.deinit();
+    defer super.rc.deinit();
     defer super.sd.deinit();
 
     var sub = try channel();
-    defer sub.rd.deinit();
+    defer sub.rc.deinit();
     // sub.sd is immediately handed off to super.sd.send(...), so don't defer dealloc
 
     const data = "foo";
@@ -70,7 +70,7 @@ test "sender transfer" {
     try super.sd
         .send(alloc, data, &ports, &.{});
     {
-        var ipc_message = try super.rd.recv(alloc);
+        var ipc_message = try super.rc.recv(alloc);
         defer ipc_message.deinit(alloc);
 
         try std.testing.expectEqual(1, ipc_message.os_ipc_channels.len);
@@ -80,7 +80,7 @@ test "sender transfer" {
         try sub_tx.send(alloc, data, &.{}, &.{});
     }
 
-    var ipc_message = try sub.rd.recv(alloc);
+    var ipc_message = try sub.rc.recv(alloc);
     defer ipc_message.deinit(alloc);
     try expectEqualStringMessages(data, 0, 0, ipc_message);
 }

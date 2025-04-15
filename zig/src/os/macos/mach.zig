@@ -54,7 +54,7 @@ pub const Port = extern struct {
         ///
         /// Corresponds to `KERN_INVALID_VALUE`.
         InvalidType,
-    } || MachError)!struct { Port, MachPortType } {
+    } || MachError)!Port {
         std.debug.assert(!self.isNull());
         var out_name: Port = undefined;
         var acquired_right: MachPortType = undefined;
@@ -73,7 +73,7 @@ pub const Port = extern struct {
             .make_send, .move_send, .copy_send => .send,
             .make_send_once, .move_send_once => .send_once,
         }));
-        return .{ out_name, acquired_right };
+        return out_name;
     }
 
     pub fn moveMember(self: Port, set: Port) KernelError!void {
@@ -553,6 +553,28 @@ pub extern "C" fn mach_port_set_attributes(
     flavor: mach_port_flavor_t,
     port_info: mach_port_info_t,
     port_info_cnt: mach_msg_type_number_t,
+) kern_return_t;
+
+pub const task_special_port_t = enum(c_int) {
+    /// The full task port for task.
+    kernel = 1,
+    /// The host (priv) port for task.
+    host = 2,
+    /// The name port for task.
+    name = 3,
+    /// Bootstrap environment for task.
+    bootstrap = 4,
+    /// The inspect port for task.
+    inspect = 5,
+    /// The read port for task.
+    read = 6,
+    _,
+};
+
+pub extern "C" fn task_get_special_port(
+    task: ipc_space_t,
+    which_port: task_special_port_t,
+    special_port: *Port,
 ) kern_return_t;
 
 pub extern "C" fn vm_allocate(
