@@ -1,36 +1,15 @@
 const std = @import("std");
 
-const common = @import("common.zig");
+const os = @import("../os.zig");
+const util = @import("../util.zig");
+
 const bootstrap = @import("macos/bootstrap.zig");
 const mach = @import("macos/mach.zig");
 
-const alloc = common.alloc;
-const IpcMessage = common.IpcMessage;
-
-const ipc_space_t = std.c.ipc_space_t;
-const mach_msg_timeout_t = std.c.mach_msg_timeout_t;
-const mach_msg_type_name_t = std.c.mach_msg_type_name_t;
-const mach_port_t = std.c.mach_port_t;
-const mach_port_right_t = std.c.mach_port_right_t;
-const vm_inherit_t = std.c.vm_inherit_t;
+const alloc = util.alloc;
+const IpcMessage = os.IpcMessage;
 
 const kern_return_t = mach.kern_return_t;
-const mach_msg_return_t = mach.mach_msg_return_t;
-const mach_msg_size_t = mach.mach_msg_size_t;
-const mach_port_msgcount_t = mach.mach_port_msgcount_t;
-
-pub const mach_msg_header_t = extern struct {
-    msgh_bits: std.c.mach_msg_bits_t,
-    msgh_size: mach_msg_size_t,
-    msgh_remote_port: mach_port_t,
-    msgh_local_port: mach_port_t,
-    msgh_voucher_port: mach_port_t,
-    msgh_id: std.c.mach_msg_id_t,
-};
-
-pub const mach_msg_body_t = extern struct {
-    msgh_descriptor_count: mach_msg_size_t,
-};
 
 const KernelError = mach.KernelError;
 const MachError = mach.MachError;
@@ -45,69 +24,22 @@ const BOOTSTRAP_PREFIX = "org.rust-lang.ipc-channel.";
 
 const BOOTSTRAP_NAME_IN_USE: kern_return_t = 1101;
 const BOOTSTRAP_SUCCESS: kern_return_t = 0;
-const MACH_MSGH_BITS_COMPLEX: u32 = 0x80000000;
-const MACH_MSG_IPC_KERNEL: kern_return_t = 0x00000800;
-const MACH_MSG_IPC_SPACE: kern_return_t = 0x00002000;
 const MACH_MSG_OOL_DESCRIPTOR: u32 = 1;
 const MACH_MSG_PORT_DESCRIPTOR: u32 = 0;
 const MACH_MSG_SUCCESS: kern_return_t = 0;
-const MACH_MSG_TIMEOUT_NONE: mach_msg_timeout_t = 0;
-const MACH_MSG_TYPE_COPY_SEND: u8 = 19;
-const MACH_MSG_TYPE_MAKE_SEND: u8 = 20;
-const MACH_MSG_TYPE_MAKE_SEND_ONCE: u8 = 21;
-const MACH_MSG_TYPE_MOVE_RECEIVE: u32 = 16;
-const MACH_MSG_TYPE_MOVE_SEND: u32 = 17;
-const MACH_MSG_TYPE_PORT_SEND: u32 = MACH_MSG_TYPE_MOVE_SEND;
-const MACH_MSG_VIRTUAL_COPY: c_uint = 1;
-const MACH_MSG_VM_KERNEL: kern_return_t = 0x00000400;
-const MACH_MSG_VM_SPACE: kern_return_t = 0x00001000;
+const MACH_MSG_TIMEOUT_NONE: std.c.mach_msg_timeout_t = 0;
 const MACH_NOTIFY_FIRST: i32 = 64;
 const MACH_NOTIFY_NO_SENDERS: i32 = MACH_NOTIFY_FIRST + 6;
 const MACH_PORT_LIMITS_INFO: i32 = 1;
-const MACH_PORT_QLIMIT_LARGE: mach_port_msgcount_t = 1024;
-const MACH_PORT_QLIMIT_MAX: mach_port_msgcount_t = MACH_PORT_QLIMIT_LARGE;
-const MACH_PORT_RIGHT_PORT_SET: mach_port_right_t = 3;
-const MACH_PORT_RIGHT_RECEIVE: mach_port_right_t = 1;
-const MACH_PORT_RIGHT_SEND: mach_port_right_t = 0;
-const MACH_RCV_BODY_ERROR: kern_return_t = 0x1000400c;
-const MACH_RCV_HEADER_ERROR: kern_return_t = 0x1000400b;
-const MACH_RCV_INTERRUPTED: kern_return_t = 0x10004005;
-const MACH_RCV_INVALID_DATA: kern_return_t = 0x10004008;
-const MACH_RCV_INVALID_NAME: kern_return_t = 0x10004002;
-const MACH_RCV_INVALID_NOTIFY: kern_return_t = 0x10004007;
-const MACH_RCV_INVALID_TRAILER: kern_return_t = 0x1000400f;
-const MACH_RCV_INVALID_TYPE: kern_return_t = 0x1000400d;
-const MACH_RCV_IN_PROGRESS: kern_return_t = 0x10004001;
-const MACH_RCV_IN_PROGRESS_TIMED: kern_return_t = 0x10004011;
-const MACH_RCV_IN_SET: kern_return_t = 0x1000400a;
+const MACH_PORT_QLIMIT_LARGE: mach.mach_port_msgcount_t = 1024;
+const MACH_PORT_QLIMIT_MAX: mach.mach_port_msgcount_t = MACH_PORT_QLIMIT_LARGE;
 const MACH_RCV_LARGE: i32 = 4;
 const MACH_RCV_MSG: i32 = 2;
-const MACH_RCV_PORT_CHANGED: kern_return_t = 0x10004006;
-const MACH_RCV_PORT_DIED: kern_return_t = 0x10004009;
-const MACH_RCV_SCATTER_SMALL: kern_return_t = 0x1000400e;
-const MACH_RCV_TIMED_OUT: kern_return_t = 0x10004003;
 const MACH_RCV_TIMEOUT: i32 = 0x100;
 const MACH_RCV_TOO_LARGE: kern_return_t = 0x10004004;
-const MACH_SEND_INTERRUPTED: kern_return_t = 0x10000007;
-const MACH_SEND_INVALID_DATA: kern_return_t = 0x10000002;
-const MACH_SEND_INVALID_DEST: kern_return_t = 0x10000003;
-const MACH_SEND_INVALID_HEADER: kern_return_t = 0x10000010;
-const MACH_SEND_INVALID_MEMORY: kern_return_t = 0x1000000c;
-const MACH_SEND_INVALID_NOTIFY: kern_return_t = 0x1000000b;
-const MACH_SEND_INVALID_REPLY: kern_return_t = 0x10000009;
-const MACH_SEND_INVALID_RIGHT: kern_return_t = 0x1000000a;
-const MACH_SEND_INVALID_RT_OOL_SIZE: kern_return_t = 0x10000015;
-const MACH_SEND_INVALID_TRAILER: kern_return_t = 0x10000011;
-const MACH_SEND_INVALID_TYPE: kern_return_t = 0x1000000f;
-const MACH_SEND_INVALID_VOUCHER: kern_return_t = 0x10000005;
-const MACH_SEND_IN_PROGRESS: kern_return_t = 0x10000001;
 const MACH_SEND_MSG: i32 = 1;
-const MACH_SEND_MSG_TOO_SMALL: kern_return_t = 0x10000008;
-const MACH_SEND_NO_BUFFER: kern_return_t = 0x1000000d;
-const MACH_SEND_TIMED_OUT: kern_return_t = 0x10000004;
-const MACH_SEND_TOO_LARGE: kern_return_t = 0x1000000e;
 const TASK_BOOTSTRAP_PORT: i32 = 4;
-const VM_INHERIT_SHARE: vm_inherit_t = 0;
+const VM_INHERIT_SHARE: std.c.vm_inherit_t = 0;
 
 pub fn channel() !struct { sd: OsIpcSender, rd: OsIpcReceiver } {
     const receiver = try OsIpcReceiver.new();
@@ -120,7 +52,7 @@ pub const OsIpcReceiver = struct {
     port: Port,
 
     pub fn new() !OsIpcReceiver {
-        const port = try Port.alloc(MACH_PORT_RIGHT_RECEIVE);
+        const port = try Port.alloc(.RIGHT_RECEIVE);
         var limits: mach.mach_port_limits = .{
             .mpl_qlimit = MACH_PORT_QLIMIT_MAX,
         };
@@ -134,7 +66,7 @@ pub const OsIpcReceiver = struct {
 
     pub fn deinit(self: *OsIpcReceiver) KernelError!void {
         defer self.port = .null;
-        try self.port.release(MACH_PORT_RIGHT_RECEIVE);
+        try self.port.release(.RIGHT_RECEIVE);
     }
 
     pub fn select(port: OsIpcReceiver, blocking_mode: BlockingMode) !OsIpcSelectionResult {
@@ -144,8 +76,7 @@ pub const OsIpcReceiver = struct {
     }
 
     pub fn sender(self: OsIpcReceiver) !OsIpcSender {
-        const result = try self.port.extractRight(MACH_MSG_TYPE_MAKE_SEND);
-        std.debug.assert(result[1] == MACH_MSG_TYPE_PORT_SEND);
+        const result = try self.port.extractRight(.make_send);
         return .{ .port = result[0] };
     }
 
@@ -164,8 +95,8 @@ pub const OsIpcReceiver = struct {
     //             }
     //
     //             let (right, acquired_right) =
-    //                 mach_port_extract_right(port, MACH_MSG_TYPE_MAKE_SEND as u32)?;
-    //             debug_assert!(acquired_right == MACH_MSG_TYPE_PORT_SEND);
+    //                 mach_port_extract_right(port, .MAKE_SEND)?;
+    //             debug_assert!(acquired_right == .PORT_SEND);
     //
     //             let mut os_result;
     //             let mut name;
@@ -213,7 +144,7 @@ pub const OsIpcReceiver = struct {
             MACH_NOTIFY_NO_SENDERS,
             0,
             self.port,
-            MACH_MSG_TYPE_MAKE_SEND_ONCE,
+            .MAKE_SEND_ONCE,
         );
     }
 
@@ -252,7 +183,7 @@ pub const OsIpcSender = struct {
 
     pub fn clone(self: @This()) KernelError!OsIpcSender {
         var cloned_port = self.port;
-        try cloned_port.addRef(MACH_PORT_RIGHT_SEND);
+        try cloned_port.addRef(.RIGHT_SEND);
         return .{
             .port = cloned_port,
         };
@@ -294,7 +225,10 @@ pub const OsIpcSender = struct {
         errdefer {
             for (ports) |*port| {
                 // TODO: how should we handle *de*allocation errors?
-                port.port().dealloc() catch {};
+                switch (port.*) {
+                    .sender => |sd| sd.port.dealloc() catch {},
+                    .receiver => |rd| rd.port.dealloc() catch {},
+                }
             }
             for (shared_memory_regions) |*smr| {
                 smr.deinit() catch {};
@@ -315,12 +249,15 @@ pub const OsIpcSender = struct {
         const is_inline_dest: *bool = @as(*bool, @ptrCast(shared_memory_descriptor_dest[shared_memory_descriptor_dest.len..].ptr));
 
         message.* = .{
-            .header = mach_msg_header_t{
-                .msgh_bits = MACH_MSG_TYPE_COPY_SEND | MACH_MSGH_BITS_COMPLEX,
+            .header = .{
+                .msgh_bits = .{
+                    .remote = .COPY_SEND,
+                    .complex = true,
+                },
                 .msgh_size = size,
-                .msgh_remote_port = self.port.name,
-                .msgh_local_port = Port.null.name,
-                .msgh_voucher_port = Port.null.name,
+                .msgh_remote_port = self.port,
+                .msgh_local_port = Port.null,
+                .msgh_voucher_port = Port.null,
                 .msgh_id = 0,
             },
             .body = .{
@@ -328,13 +265,16 @@ pub const OsIpcSender = struct {
             },
         };
 
-        for (ports, port_descriptor_dest) |outgoing_port, *dest| {
+        for (ports, port_descriptor_dest) |port, *dest| {
             dest.* = .{
-                .name = outgoing_port.port().name,
-                .disposition = switch (outgoing_port) {
+                .name = switch (port) {
+                    .sender => |sd| sd.port,
+                    .receiver => |rd| rd.port,
+                },
+                .disposition = .{ .type = switch (port) {
                     .sender => .MOVE_SEND,
                     .receiver => .MOVE_RECEIVE,
-                },
+                } },
             };
         }
 
@@ -418,10 +358,10 @@ pub const OsIpcChannel = union(enum) {
     sender: OsIpcSender,
     receiver: OsIpcReceiver,
 
-    pub fn port(self: *const @This()) Port {
+    pub fn deinit(self: *@This()) KernelError!void {
         return switch (self.*) {
-            .sender => |sd| sd.port,
-            .receiver => |rd| rd.port,
+            .sender => |sd| sd.deinit(),
+            .receiver => |rd| rd.deinit(),
         };
     }
 };
@@ -434,16 +374,16 @@ pub const OsIpcReceiverSet = struct {
 
     pub fn new() !@This() {
         return .{
-            .port = try Port.alloc(MACH_PORT_RIGHT_PORT_SET),
+            .port = try Port.alloc(.RIGHT_PORT_SET),
             .ports = .{},
         };
     }
 
     pub fn deinit(self: *@This()) !void {
         for (self.ports.items) |port| {
-            port.release(MACH_PORT_RIGHT_RECEIVE);
+            port.release(.RIGHT_RECEIVE);
         }
-        try self.port.release(MACH_PORT_RIGHT_PORT_SET);
+        try self.port.release(.RIGHT_PORT_SET);
     }
 
     /// The set takes ownership of `receiver`.
@@ -692,20 +632,20 @@ pub const OsIpcSharedMemory = struct {
 };
 
 fn setupReceiveBuffer(buffer: []u8, port: Port) !void {
-    const header: *mach_msg_header_t = @ptrCast(buffer);
+    const header: *mach.mach_msg_header_t = @ptrCast(buffer);
     header.* = .{
         .msgh_bits = 0,
         .msgh_size = std.math.cast(c_uint, buffer.len) orelse return error{TooLarge},
         .msgh_remote_port = 0,
-        .msgh_local_port = port.name,
+        .msgh_local_port = port,
         .msgh_voucher_port = 0,
         .msgh_id = 0,
     };
 }
 
 const Message = extern struct {
-    header: mach_msg_header_t,
-    body: mach_msg_body_t,
+    header: mach.mach_msg_header_t,
+    body: mach.mach_msg_body_t,
 
     pub fn payloadPadding(unaligned: usize) usize {
         return ((unaligned + 7) & ~@as(usize, 7)) - unaligned; // 8 byte alignment
