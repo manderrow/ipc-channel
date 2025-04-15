@@ -1,7 +1,10 @@
 const std = @import("std");
 
-pub const Port = struct {
-    name: mach_port_t,
+const util = @import("../../util.zig");
+
+pub const Port = extern struct {
+    /// `mach_port_t` and `mach_port_name_t` seem to be interchangeable.
+    name: std.c.mach_port_t,
 
     pub const @"null": Port = .{ .name = 0 };
 
@@ -10,10 +13,10 @@ pub const Port = struct {
     }
 
     pub fn alloc(right: mach_port_right_t) KernelError!Port {
-        var name: mach_port_t = undefined;
+        var name: Port = undefined;
         const rt = mach_port_allocate(mach_task_self(), right, &name);
         try checkKernelReturn(rt);
-        return .{ .name = name };
+        return name;
     }
 
     pub fn dealloc(self: Port) KernelError!void {
@@ -22,34 +25,60 @@ pub const Port = struct {
         // mach_port_mod_refs returns an error when there are no receivers for the port,
         // causing the sender port to never be deallocated. mach_port_deallocate handles
         // this case correctly and is therefore important to avoid dangling port leaks.
-        const rt = mach_port_deallocate(mach_task_self(), self.name);
+        const rt = mach_port_deallocate(mach_task_self(), self);
         try checkKernelReturn(rt);
     }
 
     pub fn release(self: Port, right: mach_port_right_t) KernelError!void {
         std.debug.assert(!self.isNull());
-        const rt = mach_port_mod_refs(mach_task_self(), self.name, right, -1);
+        const rt = mach_port_mod_refs(mach_task_self(), self, right, -1);
         try checkKernelReturn(rt);
     }
 
     pub fn addRef(self: Port, right: mach_port_right_t) KernelError!void {
         std.debug.assert(!self.isNull());
-        const rt = mach_port_mod_refs(mach_task_self(), self.name, right, 1);
+        const rt = mach_port_mod_refs(mach_task_self(), self, right, 1);
         try checkKernelReturn(rt);
     }
 
-    pub fn extractRight(self: Port, message_type: mach_msg_type_name_t) KernelError!struct { Port, mach_msg_type_name_t } {
+    pub fn extractRight(self: Port, desired_type: MachPortExtractRightType) (error{
+        /// The port was invalid, not denoting any rights.
+        ///
+        /// Corresponds to `KERN_INVALID_NAME`.
+        InvalidPort,
+        /// The port was valid, denoting a right, but not legal for this call.
+        ///
+        /// Corresponds to `KERN_INVALID_RIGHT`.
+        IllegalPort,
+        /// The desired type was invalid,
+        ///
+        /// Corresponds to `KERN_INVALID_VALUE`.
+        InvalidType,
+    } || MachError)!struct { Port, MachPortType } {
         std.debug.assert(!self.isNull());
-        var out_name: mach_port_t = undefined;
-        var acquired_right: mach_msg_type_name_t = undefined;
-        const rt = mach_port_extract_right(mach_task_self(), self.name, message_type, &out_name, &acquired_right);
-        try checkKernelReturn(rt);
-        return .{ .{ .name = out_name }, acquired_right };
+        var out_name: Port = undefined;
+        var acquired_right: MachPortType = undefined;
+        const rt = mach_port_extract_right(mach_task_self(), self, desired_type, &out_name, &acquired_right);
+        switch (rt) {
+            .KERN_SUCCESS => {},
+            // mach_task_self should never be invalid
+            .KERN_INVALID_TASK => unreachable,
+            .KERN_INVALID_NAME => return error.InvalidPort,
+            .KERN_INVALID_RIGHT => return error.IllegalPort,
+            .KERN_INVALID_VALUE => return error.InvalidType,
+            else => try checkMachReturn(@enumFromInt(@intFromEnum(rt))),
+        }
+        std.debug.assert(acquired_right == @as(MachPortType, switch (desired_type) {
+            .move_receive => .recv,
+            .make_send, .move_send, .copy_send => .send,
+            .make_send_once, .move_send_once => .send_once,
+        }));
+        return .{ out_name, acquired_right };
     }
 
     pub fn moveMember(self: Port, set: Port) KernelError!void {
         std.debug.assert(!self.isNull());
-        const rt = mach_port_move_member(mach_task_self(), self.name, set);
+        const rt = mach_port_move_member(mach_task_self(), self, set);
         try checkKernelReturn(rt);
     }
 
@@ -58,18 +87,18 @@ pub const Port = struct {
         msgid: mach_msg_id_t,
         sync: mach_port_mscount_t,
         notify: Port,
-        notifyPoly: mach_msg_type_name_t,
+        notify_poly: MachMsgTypeName,
     ) KernelError!struct { previous: Port } {
         std.debug.assert(!self.isNull());
         var previous: Port = .null;
         const rt = mach_port_request_notification(
             mach_task_self(),
-            self.name,
+            self,
             msgid,
             sync,
-            notify.name,
-            notifyPoly,
-            &previous.name,
+            notify,
+            .{ .type = notify_poly },
+            &previous,
         );
         try checkKernelReturn(rt);
         return .{ .previous = previous };
@@ -79,7 +108,7 @@ pub const Port = struct {
         std.debug.assert(!self.isNull());
         const rt = mach_port_set_attributes(
             mach_task_self(),
-            self.name,
+            self,
             flavor,
             port_info,
             port_info_cnt,
@@ -93,6 +122,8 @@ pub const KernelError = error{
     InvalidCapability,
     /// Name doesn't denote a right in the task.
     InvalidName,
+    /// Target task isn't an active task.
+    InvalidTask,
     /// Name denotes a right, but not an appropriate right.
     InvalidRight,
     /// Blatant range error.
@@ -111,6 +142,7 @@ pub fn checkKernelReturn(code: kern_return_t) KernelError!void {
         .SUCCESS => {},
         .NO_SPACE => error.NoSpace,
         .INVALID_NAME => error.InvalidName,
+        .INVALID_TASK => error.InvalidTask,
         .INVALID_RIGHT => error.InvalidRight,
         .INVALID_VALUE => error.InvalidValue,
         .INVALID_CAPABILITY => error.InvalidCapability,
@@ -125,6 +157,7 @@ pub const kern_return_t = enum(std.c.kern_return_t) {
     NO_SPACE = 3,
     NOT_IN_SET = 12,
     INVALID_NAME = 15,
+    INVALID_TASK = 16,
     INVALID_RIGHT = 17,
     INVALID_VALUE = 18,
     UREFS_OVERFLOW = 19,
@@ -257,6 +290,13 @@ pub fn checkMachReturn(code: mach_msg_return_t) MachError!void {
     };
 }
 
+pub fn checkKernOrMachReturn(code: kern_or_mach_msg_return_t) (KernelError || MachError)!void {
+    checkKernelReturn(@enumFromInt(@intFromEnum(code))) catch |e| switch (e) {
+        error.Unexpected => try checkMachReturn(@enumFromInt(@intFromEnum(code))),
+        else => return e,
+    };
+}
+
 pub const mach_msg_return_t = enum(std.c.kern_return_t) {
     MSG_SUCCESS = 0,
     MSG_IPC_KERNEL = 0x00000800,
@@ -300,12 +340,13 @@ pub const mach_msg_return_t = enum(std.c.kern_return_t) {
     _,
 };
 
-const ipc_space_t = std.c.ipc_space_t;
-const mach_msg_type_name_t = std.c.mach_msg_type_name_t;
-const mach_port_right_t = std.c.mach_port_right_t;
+pub const kern_or_mach_msg_return_t = util.MergeEnums(kern_return_t, "KERN_", util.ExcludeEnumVariant(mach_msg_return_t, .MSG_SUCCESS), "MACH_");
 
-/// This is the same as `mach_port_name_t`.
-const mach_port_t = std.c.mach_port_t;
+const ipc_space_t = std.c.ipc_space_t;
+const mach_msg_type_name_t = packed struct(std.c.mach_msg_type_name_t) {
+    type: MachMsgTypeName,
+    padding: std.meta.Int(.unsigned, @bitSizeOf(c_uint) - @bitSizeOf(MachMsgTypeName)) = 0,
+};
 
 pub const mach_msg_size_t = c_uint;
 pub const mach_msg_type_number_t = c_uint;
@@ -329,31 +370,63 @@ pub const mach_msg_descriptor = struct {
     };
 };
 
+pub const MachMsgTypeName = enum(u5) {
+    /// Must hold receive right
+    MOVE_RECEIVE = 16,
+    /// Must hold send right(s)
+    MOVE_SEND = 17,
+    /// Must hold sendonce right
+    MOVE_SEND_ONCE = 18,
+    /// Must hold send right(s)
+    COPY_SEND = 19,
+    /// Must hold receive right
+    MAKE_SEND = 20,
+    /// Must hold receive right
+    MAKE_SEND_ONCE = 21,
+    /// NOT VALID
+    COPY_RECEIVE = 22,
+    /// must hold receive right
+    DISPOSE_RECEIVE = 24,
+    /// must hold send right(s)
+    DISPOSE_SEND = 25,
+    /// must hold sendonce right
+    DISPOSE_SEND_ONCE = 26,
+};
+
+pub const MachPortType = enum(std.c.mach_msg_type_name_t) {
+    none = 0,
+    /// According to Apple's `mach/message.h` header file:
+    /// > Used to transfer a port name which should remain uninterpreted by the kernel.
+    /// Port rights are not transferred, just the port name.
+    ///
+    /// TODO: by "name" do they mean simply the numerical name, or is there any kernel
+    ///       state transferred? "uninterpreted by the kernel" sounds like no.
+    name = 15,
+    recv = @intFromEnum(MachMsgTypeName.MOVE_RECEIVE),
+    send = @intFromEnum(MachMsgTypeName.MOVE_SEND),
+    send_once = @intFromEnum(MachMsgTypeName.MOVE_SEND_ONCE),
+};
+
+pub const mach_port_right_t = enum(std.c.mach_port_right_t) {
+    RIGHT_SEND = 0,
+    RIGHT_RECEIVE = 1,
+    RIGHT_SEND_ONCE = 2,
+    RIGHT_PORT_SET = 3,
+    RIGHT_DEAD_NAME = 4,
+    /// obsolete right
+    RIGHT_LABELH = 5,
+    /// right not implemented
+    RIGHT_NUMBER = 6,
+    _,
+};
+
 pub const mach_msg_port_descriptor_t = extern struct {
-    name: mach_port_t,
+    name: Port,
     pad1: mach_msg_size_t = 0,
     pad2: u16 = 0,
-    disposition: enum(u8) {
-        /// Must hold receive right
-        MOVE_RECEIVE = 16,
-        /// Must hold send right(s)
-        MOVE_SEND = 17,
-        /// Must hold sendonce right
-        MOVE_SEND_ONCE = 18,
-        /// Must hold send right(s)
-        COPY_SEND = 19,
-        /// Must hold receive right
-        MAKE_SEND = 20,
-        /// Must hold receive right
-        MAKE_SEND_ONCE = 21,
-        /// NOT VALID
-        COPY_RECEIVE = 22,
-        /// must hold receive right
-        DISPOSE_RECEIVE = 24,
-        /// must hold send right(s)
-        DISPOSE_SEND = 25,
-        /// must hold sendonce right
-        DISPOSE_SEND_ONCE = 26,
+    disposition: packed struct(u8) {
+        type: MachMsgTypeName,
+        padding: u3 = 0,
     },
     type: mach_msg_descriptor.Type = .PORT_DESCRIPTOR,
 };
@@ -379,6 +452,54 @@ pub const mach_port_limits = extern struct {
     mpl_qlimit: mach_port_msgcount_t,
 };
 
+pub const NullableMachMsgTypeName = util.MergeEnums(MachMsgTypeName, null, enum(u5) {
+    null = 0,
+}, null);
+
+pub const mach_msg_bits_t = packed struct(c_uint) {
+    remote: NullableMachMsgTypeName = .null,
+    unused1: u3 = 0,
+    local: NullableMachMsgTypeName = .null,
+    unused2: u3 = 0,
+    voucher: NullableMachMsgTypeName = .null,
+    unused3: u3 = 0,
+    unused4: u4 = 0,
+    /// Not "allowed" userland->kernel.
+    uk: packed union {
+        /// Assertion help, userland private.
+        impholdasrt: bool,
+        /// Message circular, kernel private.
+        circular: bool,
+    } = .{ .impholdasrt = false },
+    /// Importance raised due to msg. Not "allowed" userland->kernel.
+    raise_imp: bool = false,
+    unused5: u1 = 0,
+    complex: bool,
+};
+
+pub const mach_msg_header_t = extern struct {
+    msgh_bits: mach_msg_bits_t,
+    msgh_size: mach_msg_size_t,
+    msgh_remote_port: Port,
+    msgh_local_port: Port,
+    msgh_voucher_port: Port,
+    msgh_id: std.c.mach_msg_id_t,
+};
+
+pub const mach_msg_body_t = extern struct {
+    msgh_descriptor_count: mach_msg_size_t,
+};
+
+/// Documented [here](https://github.com/apple-oss-distributions/xnu/blob/8d741a5de7ff4191bf97d57b9f54c2f6d4a15585/osfmk/mach/mach_port.defs#L327-L341).
+pub const MachPortExtractRightType = enum(std.c.mach_msg_type_name_t) {
+    move_receive = @intFromEnum(MachMsgTypeName.MOVE_RECEIVE),
+    copy_send = @intFromEnum(MachMsgTypeName.COPY_SEND),
+    make_send = @intFromEnum(MachMsgTypeName.MAKE_SEND),
+    move_send = @intFromEnum(MachMsgTypeName.MOVE_SEND),
+    make_send_once = @intFromEnum(MachMsgTypeName.MAKE_SEND_ONCE),
+    move_send_once = @intFromEnum(MachMsgTypeName.MOVE_SEND_ONCE),
+};
+
 extern var mach_task_self_: ipc_space_t;
 pub inline fn mach_task_self() ipc_space_t {
     return mach_task_self_;
@@ -387,48 +508,48 @@ pub inline fn mach_task_self() ipc_space_t {
 pub extern "C" fn mach_port_allocate(
     task: ipc_space_t,
     right: mach_port_right_t,
-    name: *mach_port_t,
+    name: *Port,
 ) kern_return_t;
 
 pub extern "C" fn mach_port_deallocate(
     task: ipc_space_t,
-    name: mach_port_t,
+    name: Port,
 ) kern_return_t;
 
 pub extern "C" fn mach_port_extract_right(
     task: ipc_space_t,
-    name: mach_port_t,
-    message_type: mach_msg_type_name_t,
-    out_name: *mach_port_t,
-    acquired_right: *mach_msg_type_name_t,
-) kern_return_t;
+    name: Port,
+    message_type: MachPortExtractRightType,
+    out_name: *Port,
+    acquired_right: *MachPortType,
+) kern_or_mach_msg_return_t;
 
 pub extern "C" fn mach_port_mod_refs(
     task: ipc_space_t,
-    name: mach_port_t,
+    name: Port,
     right: mach_port_right_t,
     delta: mach_port_delta_t,
 ) kern_return_t;
 
 pub extern "C" fn mach_port_move_member(
     task: ipc_space_t,
-    name: mach_port_t,
-    set: mach_port_t,
+    name: Port,
+    set: Port,
 ) kern_return_t;
 
 pub extern "C" fn mach_port_request_notification(
     task: ipc_space_t,
-    name: mach_port_t,
+    name: Port,
     msgid: mach_msg_id_t,
     sync: mach_port_mscount_t,
-    notify: mach_port_t,
+    notify: Port,
     notifyPoly: mach_msg_type_name_t,
-    previous: *mach_port_t,
+    previous: *Port,
 ) kern_return_t;
 
 pub extern "C" fn mach_port_set_attributes(
     task: ipc_space_t,
-    name: mach_port_t,
+    name: Port,
     flavor: mach_port_flavor_t,
     port_info: mach_port_info_t,
     port_info_cnt: mach_msg_type_number_t,
