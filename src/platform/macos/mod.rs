@@ -22,7 +22,7 @@ use std::ffi::CString;
 use std::fmt::{self, Debug, Formatter};
 use std::io;
 use std::marker::PhantomData;
-use std::mem::{self, MaybeUninit};
+use std::mem::{self, ManuallyDrop, MaybeUninit};
 use std::ops::{Deref, DerefMut};
 use std::ptr::{self, NonNull};
 use std::slice;
@@ -626,14 +626,16 @@ impl OsOpaqueIpcChannel {
     }
 
     pub fn into_sender(self) -> OsIpcSender {
+        let this = ManuallyDrop::new(self);
         OsIpcSender {
-            port: self.port,
+            port: this.port,
             nosync_marker: PhantomData,
         }
     }
 
     pub fn into_receiver(self) -> OsIpcReceiver {
-        OsIpcReceiver::from_name(self.port)
+        let this = ManuallyDrop::new(self);
+        OsIpcReceiver::from_name(this.port)
     }
 }
 
