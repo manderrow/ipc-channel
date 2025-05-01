@@ -970,7 +970,7 @@ impl MessageReader {
             let completion_key = self.handle.as_raw().0;
             CreateIoCompletionPort(
                 self.handle.as_raw(),
-                iocp.as_raw(),
+                Some(iocp.as_raw()),
                 completion_key as usize,
                 0,
             )?;
