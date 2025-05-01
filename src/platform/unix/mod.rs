@@ -216,7 +216,9 @@ impl OsIpcSender {
             {
                 return Err(UnixError::last());
             }
-            Ok(socket_sendbuf_size.try_into().expect("getsockopt should \"return\" a non-negative size"))
+            Ok(socket_sendbuf_size
+                .try_into()
+                .expect("getsockopt should \"return\" a non-negative size"))
         }
     }
 
@@ -510,7 +512,10 @@ impl OsIpcReceiverSet {
     }
 
     pub fn add(&mut self, receiver: OsIpcReceiver) -> Result<u64, UnixError> {
-        let last_index = self.incrementor.next().expect("should not run out of u64 values");
+        let last_index = self
+            .incrementor
+            .next()
+            .expect("should not run out of u64 values");
         let fd = receiver.consume_fd();
         let fd_token = Token(fd as usize);
         let poll_entry = PollEntry { id: last_index, fd };
@@ -527,9 +532,9 @@ impl OsIpcReceiverSet {
             match self.poll.poll(&mut self.events, None) {
                 Ok(()) if !self.events.is_empty() => break,
                 Ok(()) => {},
-                Err(ref error) => {
+                Err(error) => {
                     if error.kind() != io::ErrorKind::Interrupted {
-                        return Err(UnixError::last());
+                        return Err(UnixError::from(error));
                     }
                 },
             }
@@ -906,7 +911,7 @@ pub enum UnixError {
 
 impl UnixError {
     fn last() -> UnixError {
-        UnixError::Io(io::Error::last_os_error())
+        UnixError::from(io::Error::last_os_error())
     }
 
     #[allow(dead_code)]
