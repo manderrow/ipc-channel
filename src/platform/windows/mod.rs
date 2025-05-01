@@ -58,7 +58,7 @@ use windows::{
     core::{Error as WinError, PCSTR},
 };
 
-use crate::ipc::{BINCODE_CONFIG, IpcMessage};
+use crate::ipc::IpcMessage;
 
 mod aliased_cell;
 
@@ -206,15 +206,12 @@ impl<'data> Message<'data> {
         &self.bytes[(mem::size_of::<MessageHeader>() + self.data_len)..]
     }
 
-    fn oob_data(&self) -> Result<Option<OutOfBandMessage>, WinIpcError> {
+    fn oob_data(&self) -> Result<Option<&ArchivedOutOfBandMessage>, WinIpcError> {
         if self.oob_len > 0 {
-            let (mut oob, n) =
-                bincode::decode_from_slice::<OutOfBandMessage, _>(self.oob_bytes(), BINCODE_CONFIG)
-                    .map_err(WinIpcError::OOBDataDecodeError)?;
-            if n != self.oob_bytes().len() {
-                return Err(WinIpcError::TrailingBytesInOOBData);
-            }
-            oob.recover_handles()?;
+            let oob = rkyv::access::<ArchivedOutOfBandMessage, rkyv::rancor::BoxedError>(
+                self.oob_bytes(),
+            )
+            .map_err(WinIpcError::OOBDataDecodeError)?;
             Ok(Some(oob))
         } else {
             Ok(None)
@@ -235,7 +232,7 @@ impl<'data> Message<'data> {
 /// process.  On Windows, we duplicate handles on the sender side to a specific
 /// receiver.  If the wrong receiver gets it, those handles are not valid.
 /// These handles are recovered by the `recover_handles` method.
-#[derive(Debug, bincode::Encode, bincode::Decode)]
+#[derive(Debug, rkyv::Archive, rkyv::Serialize)]
 struct OutOfBandMessage {
     target_process_id: u32,
     channel_handles: Vec<isize>,
@@ -257,70 +254,6 @@ impl OutOfBandMessage {
         !self.channel_handles.is_empty()
             || !self.shmem_handles.is_empty()
             || self.big_data_receiver_handle.is_some()
-    }
-
-    /// Recover handles that are no longer valid in the current process via duplication.
-    /// Duplicates the handle from the target process to the current process.
-    fn recover_handles(&mut self) -> Result<(), WinError> {
-        // get current process id and target process.
-        let current_process = unsafe { GetCurrentProcess() };
-        let target_process =
-            unsafe { OpenProcess(PROCESS_DUP_HANDLE, false, self.target_process_id)? };
-
-        // Duplicate channel handles.
-        for handle in &mut self.channel_handles {
-            let mut new_handle = INVALID_HANDLE_VALUE;
-            unsafe {
-                DuplicateHandle(
-                    target_process,
-                    HANDLE(*handle as _),
-                    current_process,
-                    &mut new_handle,
-                    0,
-                    false,
-                    DUPLICATE_SAME_ACCESS,
-                )?;
-            }
-            *handle = new_handle.0 as isize;
-        }
-
-        // Duplicate any shmem handles.
-        for (handle, _) in &mut self.shmem_handles {
-            let mut new_handle = INVALID_HANDLE_VALUE;
-            unsafe {
-                DuplicateHandle(
-                    target_process,
-                    HANDLE(*handle as _),
-                    current_process,
-                    &mut new_handle,
-                    0,
-                    false,
-                    DUPLICATE_SAME_ACCESS,
-                )?;
-            }
-            *handle = new_handle.0 as isize;
-        }
-
-        // Duplicate any big data receivers.
-        if let Some((handle, _)) = &mut self.big_data_receiver_handle {
-            let mut new_handle = INVALID_HANDLE_VALUE;
-            unsafe {
-                DuplicateHandle(
-                    target_process,
-                    HANDLE(*handle as _),
-                    current_process,
-                    &mut new_handle,
-                    0,
-                    false,
-                    DUPLICATE_SAME_ACCESS,
-                )?;
-            }
-            *handle = new_handle.0 as isize;
-        }
-
-        // Close process handle.
-        unsafe { CloseHandle(target_process)? };
-        Ok(())
     }
 }
 
@@ -923,6 +856,15 @@ impl MessageReader {
             let mut big_data = None;
 
             if let Some(oob) = message.oob_data()? {
+                // Recover handles that are no longer valid in the current process via duplication.
+                // Duplicates the handle from the target process to the current process.
+
+                // get current process id and target process.
+                let current_process = unsafe { GetCurrentProcess() };
+                let target_process = unsafe {
+                    OpenProcess(PROCESS_DUP_HANDLE, false, oob.target_process_id.to_native())?
+                };
+
                 win32_trace!(
                     "[$ {:?}] msg with total {} bytes, {} channels, {} shmems, big data handle {:?}",
                     self.handle,
@@ -932,25 +874,65 @@ impl MessageReader {
                     oob.big_data_receiver_handle
                 );
 
-                for handle in oob.channel_handles {
-                    channels.push(OsOpaqueIpcChannel::new(WinHandle::new(HANDLE(handle as _))));
+                for &handle in oob.channel_handles.iter() {
+                    let mut new_handle = INVALID_HANDLE_VALUE;
+                    unsafe {
+                        DuplicateHandle(
+                            target_process,
+                            HANDLE(handle.to_native() as _),
+                            current_process,
+                            &mut new_handle,
+                            0,
+                            false,
+                            DUPLICATE_SAME_ACCESS,
+                        )?;
+                    }
+                    channels.push(OsOpaqueIpcChannel::new(WinHandle::new(new_handle)));
                 }
 
-                for (handle, size) in oob.shmem_handles {
+                for &rkyv::tuple::ArchivedTuple2(handle, size) in oob.shmem_handles.iter() {
+                    let mut new_handle = INVALID_HANDLE_VALUE;
+                    unsafe {
+                        DuplicateHandle(
+                            target_process,
+                            HANDLE(handle.to_native() as _),
+                            current_process,
+                            &mut new_handle,
+                            0,
+                            false,
+                            DUPLICATE_SAME_ACCESS,
+                        )?;
+                    }
                     shmems.push(
                         OsIpcSharedMemory::from_handle(
-                            WinHandle::new(HANDLE(handle as _)),
-                            size as usize,
+                            WinHandle::new(new_handle),
+                            size.to_native() as usize,
                         )
                         .unwrap(),
                     );
                 }
 
-                if oob.big_data_receiver_handle.is_some() {
-                    let (handle, big_data_size) = oob.big_data_receiver_handle.unwrap();
-                    let receiver = OsIpcReceiver::from_handle(WinHandle::new(HANDLE(handle as _)));
-                    big_data = Some(receiver.recv_raw(big_data_size as usize)?);
+                if let Some(&rkyv::tuple::ArchivedTuple2(handle, big_data_size)) =
+                    oob.big_data_receiver_handle.as_ref()
+                {
+                    let mut new_handle = INVALID_HANDLE_VALUE;
+                    unsafe {
+                        DuplicateHandle(
+                            target_process,
+                            HANDLE(handle.to_native() as _),
+                            current_process,
+                            &mut new_handle,
+                            0,
+                            false,
+                            DUPLICATE_SAME_ACCESS,
+                        )?;
+                    }
+                    let receiver = OsIpcReceiver::from_handle(WinHandle::new(new_handle));
+                    big_data = Some(receiver.recv_raw(big_data_size.to_native() as usize)?);
                 }
+
+                // Close process handle.
+                unsafe { CloseHandle(target_process)? };
             }
 
             let buf_data = big_data.unwrap_or_else(|| message.data().to_vec());
@@ -1409,9 +1391,19 @@ impl OsIpcSender {
         }
 
         let oob_size = if oob.needs_to_be_sent() {
-            let mut wtr = bincode::enc::write::SizeWriter::default();
-            bincode::encode_into_writer(&oob, &mut wtr, BINCODE_CONFIG).unwrap();
-            wtr.bytes_written
+            rkyv::util::with_arena(|arena| {
+                let mut counter = CountingWriter::default();
+                rkyv::api::serialize_using::<_, rkyv::rancor::Error>(
+                    &oob,
+                    &mut rkyv::ser::Serializer::new(
+                        &mut counter,
+                        arena.acquire(),
+                        rkyv::ser::sharing::Share::new(),
+                    ),
+                )
+                .unwrap();
+                counter.len
+            })
         } else {
             0
         };
@@ -1443,7 +1435,20 @@ impl OsIpcSender {
         // If we need to send OOB data, serialize it
         let mut oob_data = Vec::<u8>::with_capacity(oob_size);
         if oob.needs_to_be_sent() {
-            bincode::encode_into_std_write(&oob, &mut oob_data, BINCODE_CONFIG).unwrap();
+            rkyv::util::with_arena(|arena| {
+                let mut buf = rkyv::ser::writer::Buffer::from(oob_data.spare_capacity_mut());
+                rkyv::api::serialize_using::<_, rkyv::rancor::Error>(
+                    &oob,
+                    &mut rkyv::ser::Serializer::new(
+                        &mut buf,
+                        arena.acquire(),
+                        rkyv::ser::sharing::Share::new(),
+                    ),
+                )
+                .unwrap();
+                let len = buf.len();
+                unsafe { oob_data.set_len(len) };
+            })
         }
 
         let in_band_data_len = if big_data_sender.is_none() {
@@ -1483,6 +1488,48 @@ impl OsIpcSender {
             big_data_sender.unwrap().send_raw(data)?;
         }
 
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct CountingWriter {
+    len: usize,
+}
+
+impl rkyv::ser::Positional for CountingWriter {
+    #[inline]
+
+    fn pos(&self) -> usize {
+        self.len
+    }
+}
+
+impl<E: rkyv::rancor::Source> rkyv::ser::Writer<E> for CountingWriter {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), E> {
+        self.len = self.len.checked_add(bytes.len()).ok_or_else(|| {
+            #[derive(Debug)]
+            struct BufferOverflow {
+                write_len: usize,
+                len: usize,
+            }
+
+            impl fmt::Display for BufferOverflow {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    write!(
+                        f,
+                        "overflowed counter while adding {} bytes to existing count {}",
+                        self.write_len, self.len,
+                    )
+                }
+            }
+
+            impl std::error::Error for BufferOverflow {}
+            E::new(BufferOverflow {
+                write_len: bytes.len(),
+                len: self.len,
+            })
+        })?;
         Ok(())
     }
 }
@@ -1929,8 +1976,7 @@ pub enum WinIpcError {
     WinError(WinError),
     ChannelClosed,
     NoData,
-    OOBDataDecodeError(bincode::error::DecodeError),
-    TrailingBytesInOOBData,
+    OOBDataDecodeError(rkyv::rancor::BoxedError),
 }
 
 impl WinIpcError {
@@ -1945,7 +1991,6 @@ impl fmt::Display for WinIpcError {
             Self::WinError(e) => write!(f, "{}", e),
             Self::ChannelClosed => write!(f, "All senders for this channel closed"),
             Self::NoData => write!(f, "Channel has no data available"),
-            Self::TrailingBytesInOOBData => write!(f, "OOB data had trailing bytes"),
             Self::OOBDataDecodeError(e) => write!(f, "{}", e),
         }
     }
@@ -1973,7 +2018,6 @@ impl From<WinIpcError> for io::Error {
                 io::Error::new(io::ErrorKind::WouldBlock, "Channel has no data available")
             },
             WinIpcError::OOBDataDecodeError(e) => io::Error::other(e),
-            WinIpcError::TrailingBytesInOOBData => io::Error::other("OOB data had trailing bytes"),
         }
     }
 }

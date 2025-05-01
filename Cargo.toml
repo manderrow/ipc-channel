@@ -30,6 +30,7 @@ win32-trace = []
 [dependencies]
 bincode = "2"
 fnv = "1.0.3"
+rkyv = "0.8.10"
 uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "openbsd", target_os = "freebsd", target_os = "illumos"))'.dependencies]
