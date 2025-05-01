@@ -327,7 +327,12 @@ impl OsIpcSender {
             if result > 0 {
                 Ok(())
             } else {
-                Err(UnixError::last())
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::ConnectionReset {
+                    Err(UnixError::Io(e))
+                } else {
+                    Err(UnixError::from(e))
+                }
             }
         }
 
@@ -944,6 +949,7 @@ impl From<UnixError> for io::Error {
 
 impl From<io::Error> for UnixError {
     fn from(e: io::Error) -> UnixError {
+        // FIXME: this case should be only for recv functions, not send functions. See temporary workaround in `send_first_fragment`.
         if e.kind() == io::ErrorKind::ConnectionReset {
             Self::ChannelClosed
         } else if e.kind() == io::ErrorKind::WouldBlock
