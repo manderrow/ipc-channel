@@ -47,7 +47,7 @@ use std::time::Duration;
 /// let (tx, rx) = ipc::channel().unwrap();
 ///
 /// // Send data
-/// tx.send(payload).unwrap();
+/// tx.send(&payload).unwrap();
 ///
 /// // Receive the data
 /// let response = rx.recv().unwrap();
@@ -121,7 +121,7 @@ pub fn bytes_channel() -> Result<(IpcBytesSender, IpcBytesReceiver), io::Error> 
 /// #
 /// # let q = "Answer to the ultimate question of life, the universe, and everything";
 /// #
-/// # tx.send(q.to_owned()).unwrap();
+/// # tx.send(&q.to_owned()).unwrap();
 /// let response = rx.recv().unwrap();
 /// println!("Received data...");
 /// # assert_eq!(response, q);
@@ -136,7 +136,7 @@ pub fn bytes_channel() -> Result<(IpcBytesSender, IpcBytesReceiver), io::Error> 
 /// #
 /// # let answer = "42";
 /// #
-/// # tx.send(answer.to_owned()).unwrap();
+/// # tx.send(&answer.to_owned()).unwrap();
 /// loop {
 ///     match rx.try_recv() {
 ///         Ok(res) => {
@@ -161,8 +161,8 @@ pub fn bytes_channel() -> Result<(IpcBytesSender, IpcBytesReceiver), io::Error> 
 /// let (embedded_tx, embedded_rx) = ipc::channel().unwrap();
 /// # let data = [0x45, 0x6d, 0x62, 0x65, 0x64, 0x64, 0x65, 0x64, 0x00];
 /// // Send the IpcReceiver
-/// tx.send(embedded_rx).unwrap();
-/// # embedded_tx.send(data.to_owned()).unwrap();
+/// tx.send(&embedded_rx).unwrap();
+/// # embedded_tx.send(&data.to_owned()).unwrap();
 /// // Receive the sent IpcReceiver
 /// let received_rx = rx.recv().unwrap();
 /// // Receive any data sent to the received IpcReceiver
@@ -237,11 +237,11 @@ impl<T> IpcReceiver<T> {
 /// # let (embedded_tx, embedded_rx) = ipc::channel().unwrap();
 /// # let data = [0x45, 0x6d, 0x62, 0x65, 0x64, 0x64, 0x65, 0x64, 0x00];
 /// // Send the IpcSender
-/// tx.send(embedded_tx).unwrap();
+/// tx.send(&embedded_tx).unwrap();
 /// // Receive the sent IpcSender
 /// let received_tx = rx.recv().unwrap();
 /// // Send data from the received IpcSender
-/// received_tx.send(data.clone()).unwrap();
+/// received_tx.send(&data).unwrap();
 /// # let rx_data = embedded_rx.recv().unwrap();
 /// # assert_eq!(rx_data, data);
 /// ```
@@ -280,7 +280,10 @@ where
     }
 
     /// Send data across the channel to the receiver.
-    pub fn send(&self, data: T) -> Result<(), SendError> {
+    ///
+    /// Despite taking a reference, note that this function "takes" ownership
+    /// of any receivers inside `data`.
+    pub fn send(&self, data: &T) -> Result<(), SendError> {
         let (size, channels, shared_memory_regions) = {
             rkyv::util::with_arena(|arena| {
                 let mut ser = CountingCustomSerializer {
@@ -292,7 +295,7 @@ where
                     channels: 0,
                     shared_memory_regions: 0,
                 };
-                rkyv::api::serialize_using::<_, rkyv::rancor::BoxedError>(&data, &mut ser).unwrap();
+                rkyv::api::serialize_using::<_, rkyv::rancor::BoxedError>(data, &mut ser).unwrap();
                 (
                     ser.serializer.into_writer().len,
                     ser.channels,
@@ -327,7 +330,7 @@ where
                             .expect("really? that's ridiculous"),
                     ),
                 };
-                rkyv::api::serialize_using::<_, rkyv::rancor::BoxedError>(&data, &mut ser)?;
+                rkyv::api::serialize_using::<_, rkyv::rancor::BoxedError>(data, &mut ser)?;
                 (ser.channels, ser.shared_memory_regions)
             };
 
@@ -359,7 +362,7 @@ where
 /// // Add the receiver to the receiver set and send the data
 /// // from the sender
 /// let rx_id = rx_set.add(rx).unwrap();
-/// tx.send(data.clone()).unwrap();
+/// tx.send(&data).unwrap();
 ///
 /// // Poll the receiver set for any readable events
 /// for event in rx_set.select().unwrap() {
@@ -438,7 +441,7 @@ impl IpcReceiverSet {
 /// # let (tx, rx) = ipc::channel().unwrap();
 /// # let data = [0x76, 0x69, 0x6d, 0x00];
 /// let shmem = IpcSharedMemory::from_bytes(&data);
-/// tx.send(shmem.clone()).unwrap();
+/// tx.send(&shmem).unwrap();
 /// # let rx_shmem = rx.recv().unwrap();
 /// # assert_eq!(shmem, rx_shmem);
 /// ```
@@ -753,7 +756,7 @@ impl OpaqueIpcReceiver {
 /// let (server, server_name) = IpcOneShotServer::new().unwrap();
 /// let tx: IpcSender<Vec<u8>> = IpcSender::connect(server_name).unwrap();
 ///
-/// tx.send(vec![0x10, 0x11, 0x12, 0x13]).unwrap();
+/// tx.send(&vec![0x10, 0x11, 0x12, 0x13]).unwrap();
 /// let (_, data): (_, Vec<u8>) = server.accept().unwrap();
 /// assert_eq!(data, vec![0x10, 0x11, 0x12, 0x13]);
 /// ```
@@ -765,10 +768,10 @@ impl OpaqueIpcReceiver {
 ///
 /// let (tx1, rx1): (IpcSender<Vec<u8>>, IpcReceiver<Vec<u8>>) = ipc::channel().unwrap();
 /// let tx0 = IpcSender::connect(name).unwrap();
-/// tx0.send(tx1).unwrap();
+/// tx0.send(&tx1).unwrap();
 ///
 /// let (_, tx1): (_, IpcSender<Vec<u8>>) = server.accept().unwrap();
-/// tx1.send(vec![0x48, 0x65, 0x6b, 0x6b, 0x6f, 0x00]).unwrap();
+/// tx1.send(&vec![0x48, 0x65, 0x6b, 0x6b, 0x6f, 0x00]).unwrap();
 ///
 /// let data = rx1.recv().unwrap();
 /// assert_eq!(data, vec![0x48, 0x65, 0x6b, 0x6b, 0x6f, 0x00]);

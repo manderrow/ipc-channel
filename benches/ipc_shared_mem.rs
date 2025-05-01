@@ -35,17 +35,17 @@ fn ping_pong_mut_shared_mem<const MUT: bool, const SIZE: usize, const COUNT: u8>
                 let tx = tx1.clone();
                 let _t1 = std::thread::spawn(move || {
                     for _i in 0..=COUNT / 2 {
-                        tx2.send(on_recv::<MUT>(rx1.recv().unwrap())).unwrap();
+                        tx2.send(&on_recv::<MUT>(rx1.recv().unwrap())).unwrap();
                     }
                 });
                 let t2 = std::thread::spawn(move || {
                     for _i in 0..COUNT / 2 {
-                        tx1.send(on_recv::<MUT>(rx2.recv().unwrap())).unwrap();
+                        tx1.send(&on_recv::<MUT>(rx2.recv().unwrap())).unwrap();
                     }
                     rx2.recv().unwrap().to_vec()
                 });
                 let start = Instant::now();
-                tx.send(IpcSharedMemory::from_byte(0, SIZE)).unwrap();
+                tx.send(&IpcSharedMemory::from_byte(0, SIZE)).unwrap();
                 let data = t2.join().unwrap();
                 let duration = start.elapsed();
                 assert!(data.iter().all(|d| *d == (COUNT / 2) * 2 + 1));

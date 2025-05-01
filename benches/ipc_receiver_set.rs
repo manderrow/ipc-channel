@@ -27,7 +27,7 @@ fn bench_send_on_m_of_n<const TO_SEND: usize, const N: usize>(criterion: &mut Cr
         bencher.iter(|| {
             for _ in 0..ITERATIONS {
                 for tx in senders.iter().take(TO_SEND) {
-                    tx.send(()).unwrap();
+                    tx.send(&()).unwrap();
                 }
                 let mut received = 0;
                 while received < TO_SEND {

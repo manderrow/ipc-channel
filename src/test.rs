@@ -87,7 +87,7 @@ type Person = (String, u32);
 fn simple() {
     let person = ("Patrick Walton".to_owned(), 29);
     let (tx, rx) = ipc::channel().unwrap();
-    tx.send(person.clone()).unwrap();
+    tx.send(&person).unwrap();
     let received_person = rx.recv().unwrap();
     assert_eq!(person, received_person);
     drop(tx);
@@ -103,10 +103,10 @@ fn embedded_senders() {
     let (sub_tx, sub_rx) = ipc::channel().unwrap();
     let person_and_sender = (person.clone(), sub_tx);
     let (super_tx, super_rx) = ipc::channel().unwrap();
-    super_tx.send(person_and_sender).unwrap();
+    super_tx.send(&person_and_sender).unwrap();
     let received_person_and_sender = super_rx.recv().unwrap();
     assert_eq!(received_person_and_sender.0, person);
-    received_person_and_sender.1.send(person.clone()).unwrap();
+    received_person_and_sender.1.send(&person).unwrap();
     let received_person = sub_rx.recv().unwrap();
     assert_eq!(received_person, person);
 }
@@ -117,10 +117,10 @@ fn embedded_receivers() {
     let (sub_tx, sub_rx) = ipc::channel().unwrap();
     let person_and_receiver = (person.clone(), sub_rx);
     let (super_tx, super_rx) = ipc::channel().unwrap();
-    super_tx.send(person_and_receiver).unwrap();
+    super_tx.send(&person_and_receiver).unwrap();
     let received_person_and_receiver = super_rx.recv().unwrap();
     assert_eq!(received_person_and_receiver.0, person);
-    sub_tx.send(person.clone()).unwrap();
+    sub_tx.send(&person).unwrap();
     let received_person = received_person_and_receiver.1.recv().unwrap();
     assert_eq!(received_person, person);
 }
@@ -134,7 +134,7 @@ fn select() {
     let rx1_id = rx_set.add(rx1).unwrap();
 
     let person = ("Patrick Walton".to_owned(), 29);
-    tx0.send(person.clone()).unwrap();
+    tx0.send(&person).unwrap();
     let (received_id, received_data) = match rx_set.select().unwrap().into_iter().next().unwrap() {
         ipc::IpcSelectionResult::MessageReceived(id, msg) => (id, msg),
         ipc::IpcSelectionResult::ChannelClosed(id) => {
@@ -145,7 +145,7 @@ fn select() {
     assert_eq!(received_id, rx0_id);
     assert_eq!(received_person, person);
 
-    tx1.send(person.clone()).unwrap();
+    tx1.send(&person).unwrap();
     let (received_id, received_data) = match rx_set.select().unwrap().into_iter().next().unwrap() {
         ipc::IpcSelectionResult::MessageReceived(id, msg) => (id, msg),
         ipc::IpcSelectionResult::ChannelClosed(id) => {
@@ -156,8 +156,8 @@ fn select() {
     assert_eq!(received_id, rx1_id);
     assert_eq!(received_person, person);
 
-    tx0.send(person.clone()).unwrap();
-    tx1.send(person.clone()).unwrap();
+    tx0.send(&person).unwrap();
+    tx1.send(&person).unwrap();
     let (mut received0, mut received1) = (false, false);
     while !received0 || !received1 {
         for result in rx_set.select().unwrap().into_iter() {
@@ -190,10 +190,10 @@ fn cross_process_embedded_senders_spawn() {
     if let (Some(server0_name), Some(server2_name)) = (server0_name, server2_name) {
         let (tx1, rx1): (IpcSender<Person>, IpcReceiver<Person>) = ipc::channel().unwrap();
         let tx0 = IpcSender::connect(server0_name).unwrap();
-        tx0.send(tx1).unwrap();
+        tx0.send(&tx1).unwrap();
         rx1.recv().unwrap();
         let tx2: IpcSender<Person> = IpcSender::connect(server2_name).unwrap();
-        tx2.send(person.clone()).unwrap();
+        tx2.send(&person).unwrap();
 
         std::process::exit(0);
     }
@@ -209,14 +209,14 @@ fn cross_process_embedded_senders_fork() {
         fork(|| {
             let (tx1, rx1): (IpcSender<Person>, IpcReceiver<Person>) = ipc::channel().unwrap();
             let tx0 = IpcSender::connect(server0_name).unwrap();
-            tx0.send(tx1).unwrap();
+            tx0.send(&tx1).unwrap();
             rx1.recv().unwrap();
             let tx2: IpcSender<Person> = IpcSender::connect(server2_name).unwrap();
-            tx2.send(person.clone()).unwrap();
+            tx2.send(&person).unwrap();
         })
     };
     let (_, tx1): (_, IpcSender<Person>) = server0.accept().unwrap();
-    tx1.send(person.clone()).unwrap();
+    tx1.send(&person).unwrap();
     let (_, received_person): (_, Person) = server2.accept().unwrap();
     child_pid.wait();
     assert_eq!(received_person, person);
@@ -227,7 +227,7 @@ fn shared_memory() {
     let person = ("Patrick Walton".to_owned(), 29);
     let person_and_shared_memory = (person, IpcSharedMemory::from_byte(0xba, 1024 * 1024));
     let (tx, rx) = ipc::channel().unwrap();
-    tx.send(person_and_shared_memory.clone()).unwrap();
+    tx.send(&person_and_shared_memory).unwrap();
     let received_person_and_shared_memory = rx.recv().unwrap();
     assert_eq!(
         received_person_and_shared_memory.0,
@@ -247,17 +247,17 @@ fn shared_memory_slice() {
     let (tx, rx) = ipc::channel().unwrap();
     // test byte of size 0
     let shared_memory = IpcSharedMemory::from_byte(42, 0);
-    tx.send(shared_memory.clone()).unwrap();
+    tx.send(&shared_memory).unwrap();
     let received_shared_memory = rx.recv().unwrap();
     assert_eq!(*received_shared_memory, *shared_memory);
     // test empty slice
     let shared_memory = IpcSharedMemory::from_bytes(&[]);
-    tx.send(shared_memory.clone()).unwrap();
+    tx.send(&shared_memory).unwrap();
     let received_shared_memory = rx.recv().unwrap();
     assert_eq!(*received_shared_memory, *shared_memory);
     // test non-empty slice
     let shared_memory = IpcSharedMemory::from_bytes(&[4, 2, 42]);
-    tx.send(shared_memory.clone()).unwrap();
+    tx.send(&shared_memory).unwrap();
     let received_shared_memory = rx.recv().unwrap();
     assert_eq!(*received_shared_memory, *shared_memory);
 }
@@ -267,7 +267,7 @@ fn shared_memory_object_equality() {
     let person = ("Patrick Walton".to_owned(), 29);
     let person_and_shared_memory = (person, IpcSharedMemory::from_byte(0xba, 1024 * 1024));
     let (tx, rx) = ipc::channel().unwrap();
-    tx.send(person_and_shared_memory.clone()).unwrap();
+    tx.send(&person_and_shared_memory).unwrap();
     let received_person_and_shared_memory = rx.recv().unwrap();
     assert_eq!(received_person_and_shared_memory, person_and_shared_memory);
 }
@@ -278,7 +278,7 @@ fn opaque_sender() {
     let (tx, rx) = ipc::channel().unwrap();
     let opaque_tx = tx.to_opaque();
     let tx: IpcSender<Person> = opaque_tx.to();
-    tx.send(person.clone()).unwrap();
+    tx.send(&person).unwrap();
     let received_person = rx.recv().unwrap();
     assert_eq!(person, received_person);
 }
@@ -289,13 +289,13 @@ fn embedded_opaque_senders() {
     let (sub_tx, sub_rx) = ipc::channel::<Person>().unwrap();
     let person_and_sender = (person.clone(), sub_tx.to_opaque());
     let (super_tx, super_rx) = ipc::channel().unwrap();
-    super_tx.send(person_and_sender).unwrap();
+    super_tx.send(&person_and_sender).unwrap();
     let received_person_and_sender = super_rx.recv().unwrap();
     assert_eq!(received_person_and_sender.0, person);
     received_person_and_sender
         .1
         .to::<Person>()
-        .send(person.clone())
+        .send(&person)
         .unwrap();
     let received_person = sub_rx.recv().unwrap();
     assert_eq!(received_person, person);
@@ -309,7 +309,7 @@ fn try_recv() {
         Err(error::TryRecvError::Empty) => (),
         v => panic!("Expected empty channel err: {:?}", v),
     }
-    tx.send(person.clone()).unwrap();
+    tx.send(&person).unwrap();
     let received_person = rx.try_recv().unwrap();
     assert_eq!(person, received_person);
     match rx.try_recv() {
@@ -335,7 +335,7 @@ fn try_recv_timeout() {
         },
         v => panic!("Expected empty channel err: {:?}", v),
     }
-    tx.send(person.clone()).unwrap();
+    tx.send(&person).unwrap();
     let start_recv = Instant::now();
     let received_person = rx.try_recv_timeout(timeout).unwrap();
     assert!(start_recv.elapsed() < timeout);
@@ -365,15 +365,15 @@ fn multiple_paths_to_a_sender() {
         person_and_sender.clone(),
     ];
     let (super_tx, super_rx) = ipc::channel().unwrap();
-    super_tx.send(send_data).unwrap();
+    super_tx.send(&send_data).unwrap();
     let received_data = super_rx.recv().unwrap();
     assert_eq!(received_data[0].0, person);
     assert_eq!(received_data[1].0, person);
     assert_eq!(received_data[2].0, person);
-    received_data[0].1.send(person.clone()).unwrap();
+    received_data[0].1.send(&person).unwrap();
     let received_person = sub_rx.recv().unwrap();
     assert_eq!(received_person, person);
-    received_data[1].1.send(person.clone()).unwrap();
+    received_data[1].1.send(&person).unwrap();
     let received_person = sub_rx.recv().unwrap();
     assert_eq!(received_person, person);
 }
@@ -392,7 +392,7 @@ fn bytes() {
 fn embedded_bytes_receivers() {
     let (sub_tx, sub_rx) = ipc::bytes_channel().unwrap();
     let (super_tx, super_rx) = ipc::channel().unwrap();
-    super_tx.send(sub_tx).unwrap();
+    super_tx.send(&sub_tx).unwrap();
     let sub_tx = super_rx.recv().unwrap();
     let bytes = [1, 2, 3, 4, 5, 6, 7];
     sub_tx.send(&bytes[..]).unwrap();
@@ -403,7 +403,7 @@ fn embedded_bytes_receivers() {
 #[test]
 fn test_so_linger() {
     let (sender, receiver) = ipc::channel().unwrap();
-    sender.send(42).unwrap();
+    sender.send(&42).unwrap();
     drop(sender);
     let val = match receiver.recv() {
         Ok(val) => val,
@@ -425,6 +425,6 @@ fn clone_sender_after_receiver_dropped() {
 fn transfer_closed_sender() {
     let (main_tx, main_rx) = ipc::channel().unwrap();
     let (transfer_tx, _) = ipc::channel::<()>().unwrap();
-    assert!(main_tx.send(transfer_tx).is_ok());
+    assert!(main_tx.send(&transfer_tx).is_ok());
     let _transferred_tx = main_rx.recv().unwrap();
 }

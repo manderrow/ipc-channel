@@ -17,7 +17,7 @@ fn transfer_empty(criterion: &mut Criterion) {
         let (tx, rx) = ipc::channel().unwrap();
         bencher.iter(|| {
             for _ in 0..ITERATIONS {
-                tx.send(()).unwrap();
+                tx.send(&()).unwrap();
                 rx.recv().unwrap()
             }
         });
@@ -34,7 +34,7 @@ fn transfer_senders<const COUNT: usize>(criterion: &mut Criterion) {
         let mut transfer_txs = Some(transfer_txs);
         bencher.iter(|| {
             for _ in 0..ITERATIONS {
-                main_tx.send(transfer_txs.take().unwrap()).unwrap();
+                main_tx.send(&transfer_txs.take().unwrap()).unwrap();
                 transfer_txs = Some(main_rx.recv().unwrap());
             }
         });
@@ -51,7 +51,7 @@ fn transfer_receivers<const COUNT: usize>(criterion: &mut Criterion) {
         let mut transfer_rxs = Some(transfer_rxs);
         bencher.iter(|| {
             for _ in 0..ITERATIONS {
-                main_tx.send(transfer_rxs.take().unwrap()).unwrap();
+                main_tx.send(&transfer_rxs.take().unwrap()).unwrap();
                 transfer_rxs = Some(main_rx.recv().unwrap());
             }
         });
