@@ -13,43 +13,19 @@ use crate::platform::{
     OsIpcOneShotServer, OsIpcSelectionResult, OsIpcSharedMemory, OsOpaqueIpcChannel,
 };
 
-use bincode::{BorrowDecode, Decode, Encode};
-use std::cell::RefCell;
+use rkyv::api::high::HighValidator;
+use rkyv::bytecheck::CheckBytes;
+use rkyv::de::Pool;
+use rkyv::rancor::{Source, Strategy};
+use rkyv::{Archive, Deserialize, Portable, Serialize};
 use std::cmp::min;
 use std::fmt::{self, Debug, Formatter};
 use std::io;
 use std::marker::PhantomData;
+use std::mem::MaybeUninit;
 use std::ops::Deref;
+use std::ptr::NonNull;
 use std::time::Duration;
-
-pub(crate) const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
-
-enum SerContext {
-    Size {
-        channels: usize,
-        shared_memory_regions: usize,
-    },
-    Encode {
-        channels: Vec<OsIpcChannel>,
-        shared_memory_regions: Vec<OsIpcSharedMemory>,
-    },
-}
-
-impl SerContext {
-    const DEFAULT_SIZE: Self = Self::Size {
-        channels: 0,
-        shared_memory_regions: 0,
-    };
-
-    const DEFAULT_ENCODE: Self = Self::Encode {
-        channels: Vec::new(),
-        shared_memory_regions: Vec::new(),
-    };
-}
-
-thread_local! {
-    static SER_CONTEXT: RefCell<SerContext> = const { RefCell::new(SerContext::DEFAULT_SIZE) }
-}
 
 /// Create a connected [IpcSender] and [IpcReceiver] that
 /// transfer messages of a given type provided by type `T`
@@ -83,7 +59,7 @@ thread_local! {
 /// [IpcReceiver]: struct.IpcReceiver.html
 pub fn channel<T>() -> Result<(IpcSender<T>, IpcReceiver<T>), io::Error>
 where
-    T: Decode<Context> + Encode,
+    T: Decode + Encode,
 {
     let (os_sender, os_receiver) = platform::channel()?;
     let ipc_receiver = IpcReceiver {
@@ -207,7 +183,7 @@ pub struct IpcReceiver<T> {
 
 impl<T> IpcReceiver<T>
 where
-    T: Decode<Context>,
+    T: Decode,
 {
     /// Blocking receive.
     pub fn recv(&self) -> Result<T, RecvError> {
@@ -249,35 +225,6 @@ impl<T> IpcReceiver<T> {
     }
 }
 
-impl<T> Decode<Context> for IpcReceiver<T> {
-    fn decode<D: bincode::de::Decoder<Context = Context>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        let os_receiver = deserialize_os_ipc_receiver(decoder)?;
-        Ok(Self {
-            os_receiver,
-            phantom: PhantomData,
-        })
-    }
-}
-
-impl<'de, T> BorrowDecode<'de, Context> for IpcReceiver<T> {
-    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        Self::decode(decoder)
-    }
-}
-
-impl<T> Encode for IpcReceiver<T> {
-    fn encode<E: bincode::enc::Encoder>(
-        &self,
-        encoder: &mut E,
-    ) -> Result<(), bincode::error::EncodeError> {
-        serialize_os_ipc_receiver(&self.os_receiver, encoder)
-    }
-}
-
 /// Sending end of a channel using serialized messages.
 ///
 ///
@@ -315,7 +262,7 @@ impl<T> Clone for IpcSender<T> {
 
 impl<T> IpcSender<T>
 where
-    T: bincode::enc::Encode,
+    T: Encode,
 {
     /// Create an [IpcSender] connected to a previously defined [IpcOneShotServer].
     ///
@@ -334,26 +281,59 @@ where
 
     /// Send data across the channel to the receiver.
     pub fn send(&self, data: T) -> Result<(), SendError> {
-        SER_CONTEXT.with(|context| {
-            let old_context = context.replace(SerContext::DEFAULT_SIZE);
-            let size = {
-                let mut size_writer = bincode::enc::write::SizeWriter::default();
-                bincode::encode_into_writer(&data, &mut size_writer, BINCODE_CONFIG)?;
-                size_writer.bytes_written
+        let (size, channels, shared_memory_regions) = {
+            rkyv::util::with_arena(|arena| {
+                let mut ser = CountingCustomSerializer {
+                    serializer: rkyv::ser::Serializer::new(
+                        crate::util::CountingWriter::default(),
+                        arena.acquire(),
+                        rkyv::ser::sharing::Share::new(),
+                    ),
+                    channels: 0,
+                    shared_memory_regions: 0,
+                };
+                rkyv::api::serialize_using::<_, rkyv::rancor::BoxedError>(&data, &mut ser).unwrap();
+                (
+                    ser.serializer.into_writer().len,
+                    ser.channels,
+                    ser.shared_memory_regions,
+                )
+            })
+        };
+        rkyv::util::with_arena(|arena| {
+            let mut arena = arena.acquire();
+            let bytes: &mut [MaybeUninit<u8>] = unsafe {
+                let mut ptr = rkyv::ser::Allocator::<rkyv::rancor::BoxedError>::push_alloc(
+                    &mut arena,
+                    std::alloc::Layout::array::<u8>(size).unwrap(),
+                )?;
+                NonNull::slice_from_raw_parts(ptr.cast::<MaybeUninit<u8>>(), ptr.as_mut().len())
+                    .as_mut()
             };
-            _ = context.replace(SerContext::DEFAULT_ENCODE);
-            let mut bytes = Vec::with_capacity(size);
-            bincode::encode_into_std_write(&data, &mut bytes, BINCODE_CONFIG)?;
-            let SerContext::Encode {
-                channels,
-                shared_memory_regions,
-            } = context.replace(old_context)
-            else {
-                unreachable!()
+            let mut buf = rkyv::ser::writer::Buffer::from(bytes);
+            let (channels, shared_memory_regions) = {
+                let mut ser = CustomSerializer {
+                    serializer: rkyv::ser::Serializer::new(
+                        &mut buf,
+                        arena,
+                        rkyv::ser::sharing::Share::new(),
+                    ),
+                    channels: Vec::with_capacity(
+                        channels.try_into().expect("really? that's ridiculous"),
+                    ),
+                    shared_memory_regions: Vec::with_capacity(
+                        shared_memory_regions
+                            .try_into()
+                            .expect("really? that's ridiculous"),
+                    ),
+                };
+                rkyv::api::serialize_using::<_, rkyv::rancor::BoxedError>(&data, &mut ser)?;
+                (ser.channels, ser.shared_memory_regions)
             };
+
             Ok(self
                 .os_sender
-                .send(&bytes[..], channels, shared_memory_regions)?)
+                .send(&*buf, channels, shared_memory_regions)?)
         })
     }
 
@@ -361,35 +341,6 @@ where
         OpaqueIpcSender {
             os_sender: self.os_sender,
         }
-    }
-}
-
-impl<'de, T> Decode<Context> for IpcSender<T> {
-    fn decode<D: bincode::de::Decoder<Context = Context>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        let os_sender = deserialize_os_ipc_sender(decoder)?;
-        Ok(Self {
-            os_sender,
-            phantom: PhantomData,
-        })
-    }
-}
-
-impl<'de, T> BorrowDecode<'de, Context> for IpcSender<T> {
-    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        Self::decode(decoder)
-    }
-}
-
-impl<T> Encode for IpcSender<T> {
-    fn encode<E: bincode::enc::Encoder>(
-        &self,
-        encoder: &mut E,
-    ) -> Result<(), bincode::error::EncodeError> {
-        serialize_os_ipc_sender(&self.os_sender, encoder)
     }
 }
 
@@ -528,73 +479,49 @@ impl IpcSharedMemory {
     }
 }
 
-impl<'de> Decode<Context> for IpcSharedMemory {
-    fn decode<D: bincode::de::Decoder<Context = Context>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        let index: usize = Decode::decode(decoder)?;
-        if index == usize::MAX {
+#[derive(rkyv::Portable, bytecheck::CheckBytes)]
+#[repr(transparent)]
+pub struct IpcSharedMemoryIndex(rkyv::rend::u32_le);
+
+impl rkyv::Archive for IpcSharedMemory {
+    type Archived = IpcSharedMemoryIndex;
+
+    type Resolver = IpcSharedMemoryIndex;
+
+    fn resolve(&self, resolver: Self::Resolver, out: rkyv::Place<Self::Archived>) {
+        unsafe { out.write_unchecked(resolver) };
+    }
+}
+
+impl<S: rkyv::rancor::Fallible + CustomSerializerTrait> rkyv::Serialize<S> for IpcSharedMemory {
+    fn serialize(&self, serializer: &mut S) -> Result<Self::Resolver, S::Error> {
+        if let Some(os_shared_memory) = &self.os_shared_memory {
+            Ok(IpcSharedMemoryIndex(
+                serializer
+                    .serialize_shared_memory_region(os_shared_memory)
+                    .into(),
+            ))
+        } else {
+            Ok(IpcSharedMemoryIndex(u32::MAX.into()))
+        }
+    }
+}
+
+impl<D: rkyv::rancor::Fallible + ?Sized + CustomDeserializerTrait> Deserialize<IpcSharedMemory, D>
+    for IpcSharedMemoryIndex
+where
+    D::Error: Source,
+{
+    fn deserialize(&self, deserializer: &mut D) -> Result<IpcSharedMemory, D::Error> {
+        if self.0.to_native() == u32::MAX {
             return Ok(IpcSharedMemory::empty());
         }
-
-        let os_shared_memory = decoder
-            .context()
-            .os_ipc_shared_memory_regions
-            .get_mut(index)
-            .ok_or_else(|| {
-                bincode::error::DecodeError::Other("OsIpcSharedMemory index out of bounds")
-            })?
-            .take()
-            .ok_or_else(|| {
-                bincode::error::DecodeError::Other("OsIpcSharedMemory index already used")
-            })?;
+        let os_shared_memory = deserializer
+            .deserialize_shared_memory_region(self.0.to_native())
+            .map_err(|e| <D::Error as Source>::new(e))?;
         Ok(IpcSharedMemory {
             os_shared_memory: Some(os_shared_memory),
         })
-    }
-}
-
-impl<'de> BorrowDecode<'de, Context> for IpcSharedMemory {
-    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        Self::decode(decoder)
-    }
-}
-
-impl Encode for IpcSharedMemory {
-    fn encode<E: bincode::enc::Encoder>(
-        &self,
-        encoder: &mut E,
-    ) -> Result<(), bincode::error::EncodeError> {
-        if let Some(os_shared_memory) = &self.os_shared_memory {
-            let index = SER_CONTEXT.with(|context| {
-                let mut context = context.borrow_mut();
-                match &mut *context {
-                    SerContext::Size {
-                        shared_memory_regions,
-                        ..
-                    } => {
-                        let index = *shared_memory_regions;
-                        *shared_memory_regions += 1;
-                        index
-                    },
-                    SerContext::Encode {
-                        shared_memory_regions,
-                        ..
-                    } => {
-                        let index = shared_memory_regions.len();
-                        shared_memory_regions.push(os_shared_memory.clone());
-                        index
-                    },
-                }
-            });
-            debug_assert!(index < usize::MAX);
-            index
-        } else {
-            usize::MAX
-        }
-        .encode(encoder)
     }
 }
 
@@ -679,6 +606,79 @@ pub struct Context {
     os_ipc_shared_memory_regions: Vec<Option<OsIpcSharedMemory>>,
 }
 
+trait Decode: Sized {
+    type Archived: Portable
+        + for<'a> CheckBytes<HighValidator<'a, rkyv::rancor::BoxedError>>
+        + Deserialize<Self, Strategy<CustomDeserializer<Pool>, rkyv::rancor::BoxedError>>;
+}
+
+impl<T: Archive> Decode for T
+where
+    T::Archived: Portable
+        + for<'a> CheckBytes<HighValidator<'a, rkyv::rancor::BoxedError>>
+        + Deserialize<T, Strategy<CustomDeserializer<Pool>, rkyv::rancor::BoxedError>>,
+{
+    type Archived = T::Archived;
+}
+
+trait Encode
+where
+    Self: for<'a> rkyv::SerializeUnsized<
+            rkyv::rancor::Strategy<
+                CountingCustomSerializer<
+                    rkyv::ser::Serializer<
+                        crate::util::CountingWriter,
+                        rkyv::ser::allocator::ArenaHandle<'a>,
+                        rkyv::ser::sharing::Share,
+                    >,
+                >,
+                rkyv::rancor::BoxedError,
+            >,
+        >,
+    Self: for<'a, 'b, 'c> rkyv::SerializeUnsized<
+            rkyv::rancor::Strategy<
+                CustomSerializer<
+                    rkyv::ser::Serializer<
+                        &'a mut rkyv::ser::writer::Buffer<'b>,
+                        rkyv::ser::allocator::ArenaHandle<'c>,
+                        rkyv::ser::sharing::Share,
+                    >,
+                >,
+                rkyv::rancor::BoxedError,
+            >,
+        >,
+{
+}
+
+impl<T> Encode for T
+where
+    T: for<'a> rkyv::SerializeUnsized<
+            rkyv::rancor::Strategy<
+                CountingCustomSerializer<
+                    rkyv::ser::Serializer<
+                        crate::util::CountingWriter,
+                        rkyv::ser::allocator::ArenaHandle<'a>,
+                        rkyv::ser::sharing::Share,
+                    >,
+                >,
+                rkyv::rancor::BoxedError,
+            >,
+        >,
+    T: for<'a, 'b, 'c> rkyv::SerializeUnsized<
+            rkyv::rancor::Strategy<
+                CustomSerializer<
+                    rkyv::ser::Serializer<
+                        &'a mut rkyv::ser::writer::Buffer<'b>,
+                        rkyv::ser::allocator::ArenaHandle<'c>,
+                        rkyv::ser::sharing::Share,
+                    >,
+                >,
+                rkyv::rancor::BoxedError,
+            >,
+        >,
+{
+}
+
 impl IpcMessage {
     pub(crate) fn new(
         data: Vec<u8>,
@@ -693,29 +693,21 @@ impl IpcMessage {
     }
 
     /// Deserialize the raw data in the contained message into the inferred type.
-    pub fn to<T>(self) -> Result<T, DecodeError>
-    where
-        T: Decode<Context>,
-    {
+    pub fn to<T: Decode>(self) -> Result<T, DecodeError> {
         let os_ipc_shared_memory_regions = self
             .os_ipc_shared_memory_regions
             .into_iter()
             .map(Some)
             .collect::<Vec<_>>();
-        let result = bincode::decode_from_slice_with_context(
-            &self.data[..],
-            BINCODE_CONFIG,
-            Context {
-                os_ipc_channels: self.os_ipc_channels,
-                os_ipc_shared_memory_regions: os_ipc_shared_memory_regions,
+        let archived = rkyv::access::<T::Archived, rkyv::rancor::BoxedError>(&self.data[..])?;
+        let t = rkyv::api::deserialize_using::<T, _, rkyv::rancor::BoxedError>(
+            archived,
+            &mut CustomDeserializer {
+                deserializer: Pool::new(),
+                channels: self.os_ipc_channels,
+                shared_memory_regions: os_ipc_shared_memory_regions,
             },
-        );
-        /* Error check comes after doing cleanup,
-         * since we need the cleanup both in the success and the error cases. */
-        let (t, n) = result?;
-        if n != self.data.len() {
-            return Err(DecodeError::TrailingBytes);
-        }
+        )?;
         Ok(t)
     }
 }
@@ -734,32 +726,6 @@ impl OpaqueIpcSender {
     }
 }
 
-impl<'de> Decode<Context> for OpaqueIpcSender {
-    fn decode<D: bincode::de::Decoder<Context = Context>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        let os_sender = deserialize_os_ipc_sender(decoder)?;
-        Ok(Self { os_sender })
-    }
-}
-
-impl<'de> BorrowDecode<'de, Context> for OpaqueIpcSender {
-    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        Self::decode(decoder)
-    }
-}
-
-impl Encode for OpaqueIpcSender {
-    fn encode<E: bincode::enc::Encoder>(
-        &self,
-        encoder: &mut E,
-    ) -> Result<(), bincode::error::EncodeError> {
-        serialize_os_ipc_sender(&self.os_sender, encoder)
-    }
-}
-
 #[derive(Debug)]
 pub struct OpaqueIpcReceiver {
     os_receiver: OsIpcReceiver,
@@ -771,32 +737,6 @@ impl OpaqueIpcReceiver {
             os_receiver: self.os_receiver,
             phantom: PhantomData,
         }
-    }
-}
-
-impl<'de> Decode<Context> for OpaqueIpcReceiver {
-    fn decode<D: bincode::de::Decoder<Context = Context>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        let os_receiver = deserialize_os_ipc_receiver(decoder)?;
-        Ok(Self { os_receiver })
-    }
-}
-
-impl<'de> BorrowDecode<'de, Context> for OpaqueIpcReceiver {
-    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        Self::decode(decoder)
-    }
-}
-
-impl Encode for OpaqueIpcReceiver {
-    fn encode<E: bincode::enc::Encoder>(
-        &self,
-        encoder: &mut E,
-    ) -> Result<(), bincode::error::EncodeError> {
-        serialize_os_ipc_receiver(&self.os_receiver, encoder)
     }
 }
 
@@ -841,7 +781,7 @@ pub struct IpcOneShotServer<T> {
 
 impl<T> IpcOneShotServer<T>
 where
-    T: Decode<Context> + Encode,
+    T: Decode + Encode,
 {
     pub fn new() -> Result<(IpcOneShotServer<T>, String), io::Error> {
         let (os_server, name) = OsIpcOneShotServer::new()?;
@@ -891,32 +831,6 @@ impl IpcBytesReceiver {
     }
 }
 
-impl<'de> Decode<Context> for IpcBytesReceiver {
-    fn decode<D: bincode::de::Decoder<Context = Context>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        let os_receiver = deserialize_os_ipc_receiver(decoder)?;
-        Ok(IpcBytesReceiver { os_receiver })
-    }
-}
-
-impl<'de> BorrowDecode<'de, Context> for IpcBytesReceiver {
-    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        Self::decode(decoder)
-    }
-}
-
-impl Encode for IpcBytesReceiver {
-    fn encode<E: bincode::enc::Encoder>(
-        &self,
-        encoder: &mut E,
-    ) -> Result<(), bincode::error::EncodeError> {
-        serialize_os_ipc_receiver(&self.os_receiver, encoder)
-    }
-}
-
 /// Sending end of a channel that does not used serialized messages.
 #[derive(Debug)]
 pub struct IpcBytesSender {
@@ -931,32 +845,6 @@ impl Clone for IpcBytesSender {
     }
 }
 
-impl<'de> Decode<Context> for IpcBytesSender {
-    fn decode<D: bincode::de::Decoder<Context = Context>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        let os_sender = deserialize_os_ipc_sender(decoder)?;
-        Ok(Self { os_sender })
-    }
-}
-
-impl<'de> BorrowDecode<'de, Context> for IpcBytesSender {
-    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        Self::decode(decoder)
-    }
-}
-
-impl Encode for IpcBytesSender {
-    fn encode<E: bincode::enc::Encoder>(
-        &self,
-        encoder: &mut E,
-    ) -> Result<(), bincode::error::EncodeError> {
-        serialize_os_ipc_sender(&self.os_sender, encoder)
-    }
-}
-
 impl IpcBytesSender {
     #[inline]
     pub fn send(&self, data: &[u8]) -> Result<(), io::Error> {
@@ -966,84 +854,465 @@ impl IpcBytesSender {
     }
 }
 
-fn serialize_os_ipc_sender<S>(
-    sender: &OsIpcSender,
-    serializer: &mut S,
-) -> Result<(), bincode::error::EncodeError>
-where
-    S: bincode::enc::Encoder,
-{
-    let index = SER_CONTEXT.with(|context| {
-        let mut context = context.borrow_mut();
-        match &mut *context {
-            SerContext::Size { channels, .. } => {
-                let index = *channels;
-                *channels += 1;
-                index
-            },
-            SerContext::Encode { channels, .. } => {
-                let index = channels.len();
-                channels.push(OsIpcChannel::Sender(sender.clone()));
-                index
-            },
+macro_rules! impl_archive {
+	($T:ty, $Index:ident $(, <[$($generics:tt)+]>)?) => {
+		#[derive(rkyv::Portable, bytecheck::CheckBytes)]
+		#[repr(transparent)]
+		pub struct $Index(rkyv::rend::u32_le);
+
+		impl$(<$($generics)+>)? Archive for $T {
+		    type Archived = $Index;
+
+		    type Resolver = $Index;
+
+		    fn resolve(&self, resolver: Self::Resolver, out: rkyv::Place<Self::Archived>) {
+		        unsafe { out.write_unchecked(resolver) };
+		    }
+		}
+	}
+}
+
+macro_rules! impl_deserialize {
+    ($T:ident, $Index:ident, $field:ident, $to_direction:ident) => {
+        impl<D: rkyv::rancor::Fallible + ?Sized + CustomDeserializerTrait> Deserialize<$T, D>
+            for $Index
+        where
+            D::Error: Source,
+        {
+            fn deserialize(&self, deserializer: &mut D) -> Result<$T, D::Error> {
+                let channel = deserializer
+                    .deserialize_channel(self.0.to_native())
+                    .map_err(|e| <D::Error as Source>::new(e))?;
+                Ok($T {
+                    $field: channel.$to_direction(),
+                })
+            }
         }
-    });
-    index.encode(serializer)
+    };
 }
 
-fn deserialize_os_ipc_sender<D>(
-    deserializer: &mut D,
-) -> Result<OsIpcSender, bincode::error::DecodeError>
-where
-    D: bincode::de::Decoder<Context = Context>,
-{
-    let index: usize = Decode::decode(deserializer)?;
+// real impls
 
-    deserializer
-        .context()
-        .os_ipc_channels
-        .get_mut(index)
-        .ok_or_else(|| bincode::error::DecodeError::Other("OsIpcSender index out of bounds"))
-        .map(|channel| channel.to_sender())
+impl_archive!(OsIpcReceiver, OsIpcReceiverIndex);
+
+impl<S: rkyv::rancor::Fallible + ?Sized + CustomSerializerTrait> Serialize<S> for OsIpcReceiver {
+    fn serialize(&self, serializer: &mut S) -> Result<Self::Resolver, S::Error> {
+        Ok(OsIpcReceiverIndex(
+            serializer.serialize_receiver(self).into(),
+        ))
+    }
 }
 
-fn serialize_os_ipc_receiver<S>(
-    receiver: &OsIpcReceiver,
-    serializer: &mut S,
-) -> Result<(), bincode::error::EncodeError>
-where
-    S: bincode::enc::Encoder,
+impl_archive!(OsIpcSender, OsIpcSenderIndex);
+
+impl<S: rkyv::rancor::Fallible + ?Sized + CustomSerializerTrait> Serialize<S> for OsIpcSender {
+    fn serialize(&self, serializer: &mut S) -> Result<Self::Resolver, S::Error> {
+        Ok(OsIpcSenderIndex(serializer.serialize_sender(self).into()))
+    }
+}
+
+// derived impls
+
+impl_archive!(OpaqueIpcReceiver, OpaqueIpcReceiverIndex);
+impl_deserialize!(
+    OpaqueIpcReceiver,
+    OpaqueIpcReceiverIndex,
+    os_receiver,
+    into_receiver
+);
+
+impl<S: rkyv::rancor::Fallible + ?Sized + CustomSerializerTrait> Serialize<S>
+    for OpaqueIpcReceiver
 {
-    let index = SER_CONTEXT.with(|context| {
-        let mut context = context.borrow_mut();
-        match &mut *context {
-            SerContext::Size { channels, .. } => {
-                let index = *channels;
-                *channels += 1;
-                index
-            },
-            SerContext::Encode { channels, .. } => {
-                let index = channels.len();
-                channels.push(OsIpcChannel::Receiver(receiver.consume()));
-                index
-            },
+    fn serialize(&self, serializer: &mut S) -> Result<Self::Resolver, S::Error> {
+        self.os_receiver
+            .serialize(serializer)
+            .map(|i| OpaqueIpcReceiverIndex(i.0))
+    }
+}
+
+impl_archive!(IpcBytesReceiver, IpcBytesReceiverIndex);
+impl_deserialize!(
+    IpcBytesReceiver,
+    IpcBytesReceiverIndex,
+    os_receiver,
+    into_receiver
+);
+
+impl<S: rkyv::rancor::Fallible + ?Sized + CustomSerializerTrait> Serialize<S> for IpcBytesReceiver {
+    fn serialize(&self, serializer: &mut S) -> Result<Self::Resolver, S::Error> {
+        self.os_receiver
+            .serialize(serializer)
+            .map(|i| IpcBytesReceiverIndex(i.0))
+    }
+}
+
+impl_archive!(IpcReceiver<T>, IpcReceiverIndex, <[T]>);
+
+impl<T, S: rkyv::rancor::Fallible + ?Sized + CustomSerializerTrait> Serialize<S>
+    for IpcReceiver<T>
+{
+    fn serialize(&self, serializer: &mut S) -> Result<Self::Resolver, S::Error> {
+        self.os_receiver
+            .serialize(serializer)
+            .map(|i| IpcReceiverIndex(i.0))
+    }
+}
+
+impl<T, D: rkyv::rancor::Fallible + ?Sized + CustomDeserializerTrait> Deserialize<IpcReceiver<T>, D>
+    for IpcReceiverIndex
+where
+    D::Error: Source,
+{
+    fn deserialize(&self, deserializer: &mut D) -> Result<IpcReceiver<T>, D::Error> {
+        let channel = deserializer
+            .deserialize_channel(self.0.to_native())
+            .map_err(|e| <D::Error as Source>::new(e))?;
+        Ok(IpcReceiver {
+            os_receiver: channel.into_receiver(),
+            phantom: PhantomData,
+        })
+    }
+}
+
+impl_archive!(OpaqueIpcSender, OpaqueIpcSenderIndex);
+impl_deserialize!(
+    OpaqueIpcSender,
+    OpaqueIpcSenderIndex,
+    os_sender,
+    into_sender
+);
+
+impl<S: rkyv::rancor::Fallible + ?Sized + CustomSerializerTrait> Serialize<S> for OpaqueIpcSender {
+    fn serialize(&self, serializer: &mut S) -> Result<Self::Resolver, S::Error> {
+        self.os_sender
+            .serialize(serializer)
+            .map(|i| OpaqueIpcSenderIndex(i.0))
+    }
+}
+
+impl_archive!(IpcBytesSender, IpcBytesSenderIndex);
+impl_deserialize!(IpcBytesSender, IpcBytesSenderIndex, os_sender, into_sender);
+
+impl<S: rkyv::rancor::Fallible + ?Sized + CustomSerializerTrait> Serialize<S> for IpcBytesSender {
+    fn serialize(&self, serializer: &mut S) -> Result<Self::Resolver, S::Error> {
+        self.os_sender
+            .serialize(serializer)
+            .map(|i| IpcBytesSenderIndex(i.0))
+    }
+}
+
+impl_archive!(IpcSender<T>, IpcSenderIndex, <[T]>);
+
+impl<T, S: rkyv::rancor::Fallible + ?Sized + CustomSerializerTrait> Serialize<S> for IpcSender<T> {
+    fn serialize(&self, serializer: &mut S) -> Result<Self::Resolver, S::Error> {
+        self.os_sender
+            .serialize(serializer)
+            .map(|i| IpcSenderIndex(i.0))
+    }
+}
+
+impl<T, D: rkyv::rancor::Fallible + ?Sized + CustomDeserializerTrait> Deserialize<IpcSender<T>, D>
+    for IpcSenderIndex
+where
+    D::Error: Source,
+{
+    fn deserialize(&self, deserializer: &mut D) -> Result<IpcSender<T>, D::Error> {
+        let channel = deserializer
+            .deserialize_channel(self.0.to_native())
+            .map_err(|e| <D::Error as Source>::new(e))?;
+        Ok(IpcSender {
+            os_sender: channel.into_sender(),
+            phantom: PhantomData,
+        })
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum DeserializeChannelError {
+    #[error("Channel index {index} out of bounds for channel count {len}")]
+    IndexOutOfBounds { index: u32, len: usize },
+}
+
+#[derive(Debug, thiserror::Error)]
+enum DeserializeSharedMemoryRegionError {
+    #[error("Shared memory region index {index} out of bounds for region count {len}")]
+    IndexOutOfBounds { index: u32, len: usize },
+    #[error("Shared memory region at index {index} has already been consumed")]
+    AlreadyConsumed { index: u32 },
+}
+
+trait CustomDeserializerTrait {
+    fn deserialize_channel(
+        &mut self,
+        index: u32,
+    ) -> Result<OsOpaqueIpcChannel, DeserializeChannelError>;
+
+    fn deserialize_shared_memory_region(
+        &mut self,
+        index: u32,
+    ) -> Result<OsIpcSharedMemory, DeserializeSharedMemoryRegionError>;
+}
+
+struct CustomDeserializer<D> {
+    deserializer: D,
+    channels: Vec<OsOpaqueIpcChannel>,
+    shared_memory_regions: Vec<Option<OsIpcSharedMemory>>,
+}
+
+impl<D: rkyv::de::Pooling<E>, E> rkyv::de::Pooling<E> for CustomDeserializer<D> {
+    fn start_pooling(&mut self, address: usize) -> rkyv::de::PoolingState {
+        self.deserializer.start_pooling(address)
+    }
+
+    unsafe fn finish_pooling(
+        &mut self,
+        address: usize,
+        ptr: rkyv::de::ErasedPtr,
+        drop: unsafe fn(rkyv::de::ErasedPtr),
+    ) -> Result<(), E> {
+        unsafe { self.deserializer.finish_pooling(address, ptr, drop) }
+    }
+}
+
+impl<D> CustomDeserializerTrait for CustomDeserializer<D> {
+    fn deserialize_channel(
+        &mut self,
+        index: u32,
+    ) -> Result<OsOpaqueIpcChannel, DeserializeChannelError> {
+        let index_usize: usize =
+            index
+                .try_into()
+                .map_err(|_| DeserializeChannelError::IndexOutOfBounds {
+                    index,
+                    len: self.channels.len(),
+                })?;
+        match self.channels.get_mut(index_usize) {
+            Some(t) => Ok(t.consume()),
+            None => Err(DeserializeChannelError::IndexOutOfBounds {
+                index,
+                len: self.channels.len(),
+            }),
         }
-    });
-    index.encode(serializer)
+    }
+
+    fn deserialize_shared_memory_region(
+        &mut self,
+        index: u32,
+    ) -> Result<OsIpcSharedMemory, DeserializeSharedMemoryRegionError> {
+        assert_ne!(index, u32::MAX);
+        let index_usize: usize =
+            index
+                .try_into()
+                .map_err(|_| DeserializeSharedMemoryRegionError::IndexOutOfBounds {
+                    index,
+                    len: self.channels.len(),
+                })?;
+        match self.shared_memory_regions.get_mut(index_usize) {
+            Some(t) => Ok(t
+                .take()
+                .ok_or(DeserializeSharedMemoryRegionError::AlreadyConsumed { index })?),
+            None => Err(DeserializeSharedMemoryRegionError::IndexOutOfBounds {
+                index,
+                len: self.channels.len(),
+            }),
+        }
+    }
 }
 
-fn deserialize_os_ipc_receiver<D>(
-    deserializer: &mut D,
-) -> Result<OsIpcReceiver, bincode::error::DecodeError>
-where
-    D: bincode::de::Decoder<Context = Context>,
-{
-    let index: usize = Decode::decode(deserializer)?;
+impl<S: CustomDeserializerTrait, E> CustomDeserializerTrait for Strategy<S, E> {
+    fn deserialize_channel(
+        &mut self,
+        index: u32,
+    ) -> Result<OsOpaqueIpcChannel, DeserializeChannelError> {
+        (**self).deserialize_channel(index)
+    }
 
-    deserializer
-        .context()
-        .os_ipc_channels
-        .get_mut(index)
-        .ok_or_else(|| bincode::error::DecodeError::Other("OsIpcReceiver index out of bounds"))
-        .map(|channel| channel.to_receiver())
+    fn deserialize_shared_memory_region(
+        &mut self,
+        index: u32,
+    ) -> Result<OsIpcSharedMemory, DeserializeSharedMemoryRegionError> {
+        (**self).deserialize_shared_memory_region(index)
+    }
+}
+
+trait CustomSerializerTrait {
+    fn serialize_receiver(&mut self, channel: &OsIpcReceiver) -> u32;
+    fn serialize_sender(&mut self, channel: &OsIpcSender) -> u32;
+
+    fn serialize_shared_memory_region(&mut self, shared_memory_region: &OsIpcSharedMemory) -> u32;
+}
+
+#[derive(Debug, Default)]
+struct CountingCustomSerializer<S> {
+    serializer: S,
+    channels: u32,
+    shared_memory_regions: u32,
+}
+
+impl<S> CustomSerializerTrait for CountingCustomSerializer<S> {
+    fn serialize_receiver(&mut self, _: &OsIpcReceiver) -> u32 {
+        let i = self.channels;
+        self.channels += 1;
+        i
+    }
+
+    fn serialize_sender(&mut self, _: &OsIpcSender) -> u32 {
+        let i = self.channels;
+        self.channels += 1;
+        i
+    }
+
+    fn serialize_shared_memory_region(&mut self, _: &OsIpcSharedMemory) -> u32 {
+        let i = self.shared_memory_regions;
+        self.shared_memory_regions += 1;
+        i
+    }
+}
+
+unsafe impl<S: rkyv::ser::Allocator<E>, E> rkyv::ser::Allocator<E> for CountingCustomSerializer<S> {
+    unsafe fn push_alloc(
+        &mut self,
+        layout: std::alloc::Layout,
+    ) -> Result<std::ptr::NonNull<[u8]>, E> {
+        unsafe { self.serializer.push_alloc(layout) }
+    }
+
+    unsafe fn pop_alloc(
+        &mut self,
+        ptr: std::ptr::NonNull<u8>,
+        layout: std::alloc::Layout,
+    ) -> Result<(), E> {
+        unsafe { self.serializer.pop_alloc(ptr, layout) }
+    }
+}
+
+impl<S: rkyv::ser::Positional> rkyv::ser::Positional for CountingCustomSerializer<S> {
+    fn pos(&self) -> usize {
+        self.serializer.pos()
+    }
+}
+
+impl<S: rkyv::ser::Writer<E>, E> rkyv::ser::Writer<E> for CountingCustomSerializer<S> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), E> {
+        self.serializer.write(bytes)
+    }
+}
+
+impl<S: rkyv::ser::Sharing<E>, E> rkyv::ser::Sharing<E> for CountingCustomSerializer<S> {
+    fn start_sharing(&mut self, address: usize) -> rkyv::ser::sharing::SharingState {
+        self.serializer.start_sharing(address)
+    }
+
+    fn finish_sharing(&mut self, address: usize, pos: usize) -> Result<(), E> {
+        self.serializer.finish_sharing(address, pos)
+    }
+}
+
+#[derive(Default)]
+struct CustomSerializer<S> {
+    serializer: S,
+    channels: Vec<OsIpcChannel>,
+    shared_memory_regions: Vec<OsIpcSharedMemory>,
+}
+
+impl<S> CustomSerializer<S> {
+    pub fn new(serializer: S) -> Self {
+        Self {
+            serializer,
+            // TODO: reuse buffers
+            channels: Vec::new(),
+            shared_memory_regions: Vec::new(),
+        }
+    }
+}
+
+impl<S> CustomSerializerTrait for CustomSerializer<S> {
+    fn serialize_receiver(&mut self, receiver: &OsIpcReceiver) -> u32 {
+        let i = self.channels.len();
+        assert_ne!(
+            self.channels.capacity(),
+            self.channels.len(),
+            "Invalid call to serialize_channel"
+        );
+        self.channels
+            .push(OsIpcChannel::Receiver(receiver.consume()));
+        i.try_into().unwrap()
+    }
+
+    fn serialize_sender(&mut self, sender: &OsIpcSender) -> u32 {
+        let i = self.channels.len();
+        assert_ne!(
+            self.channels.capacity(),
+            self.channels.len(),
+            "Invalid call to serialize_channel"
+        );
+        self.channels.push(OsIpcChannel::Sender(sender.clone()));
+        i.try_into().unwrap()
+    }
+
+    fn serialize_shared_memory_region(&mut self, shared_memory_region: &OsIpcSharedMemory) -> u32 {
+        let i = self.shared_memory_regions.len();
+        assert_ne!(
+            self.shared_memory_regions.capacity(),
+            self.shared_memory_regions.len(),
+            "Invalid call to serialize_shared_memory_region"
+        );
+        self.shared_memory_regions
+            .push(shared_memory_region.clone());
+        i.try_into().unwrap()
+    }
+}
+
+unsafe impl<S: rkyv::ser::Allocator<E>, E> rkyv::ser::Allocator<E> for CustomSerializer<S> {
+    unsafe fn push_alloc(
+        &mut self,
+        layout: std::alloc::Layout,
+    ) -> Result<std::ptr::NonNull<[u8]>, E> {
+        unsafe { self.serializer.push_alloc(layout) }
+    }
+
+    unsafe fn pop_alloc(
+        &mut self,
+        ptr: std::ptr::NonNull<u8>,
+        layout: std::alloc::Layout,
+    ) -> Result<(), E> {
+        unsafe { self.serializer.pop_alloc(ptr, layout) }
+    }
+}
+
+impl<S: rkyv::ser::Positional> rkyv::ser::Positional for CustomSerializer<S> {
+    fn pos(&self) -> usize {
+        self.serializer.pos()
+    }
+}
+
+impl<S: rkyv::ser::Writer<E>, E> rkyv::ser::Writer<E> for CustomSerializer<S> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), E> {
+        self.serializer.write(bytes)
+    }
+}
+
+impl<S: rkyv::ser::Sharing<E>, E> rkyv::ser::Sharing<E> for CustomSerializer<S> {
+    fn start_sharing(&mut self, address: usize) -> rkyv::ser::sharing::SharingState {
+        self.serializer.start_sharing(address)
+    }
+
+    fn finish_sharing(&mut self, address: usize, pos: usize) -> Result<(), E> {
+        self.serializer.finish_sharing(address, pos)
+    }
+}
+
+impl<S: CustomSerializerTrait, E> CustomSerializerTrait for Strategy<S, E> {
+    fn serialize_receiver(&mut self, channel: &OsIpcReceiver) -> u32 {
+        (**self).serialize_receiver(channel)
+    }
+
+    fn serialize_sender(&mut self, channel: &OsIpcSender) -> u32 {
+        (**self).serialize_sender(channel)
+    }
+
+    fn serialize_shared_memory_region(&mut self, region: &OsIpcSharedMemory) -> u32 {
+        (**self).serialize_shared_memory_region(region)
+    }
 }

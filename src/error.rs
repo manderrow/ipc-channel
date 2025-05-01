@@ -5,15 +5,13 @@ pub use crate::platform::OsError;
 
 #[derive(Debug)]
 pub enum DecodeError {
-    Bincode(bincode::error::DecodeError),
-    TrailingBytes,
+    Rkyv(rkyv::rancor::BoxedError),
 }
 
 impl fmt::Display for DecodeError {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Self::Bincode(ref err) => write!(fmt, "bincode error: {}", err),
-            Self::TrailingBytes => write!(fmt, "trailing bytes"),
+            Self::Rkyv(ref err) => write!(fmt, "rkyv error: {}", err),
         }
     }
 }
@@ -21,22 +19,20 @@ impl fmt::Display for DecodeError {
 impl StdError for DecodeError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match *self {
-            Self::Bincode(ref err) => Some(err),
-            Self::TrailingBytes => None,
+            Self::Rkyv(ref err) => Some(err),
         }
     }
 }
 
-impl From<bincode::error::DecodeError> for DecodeError {
-    fn from(value: bincode::error::DecodeError) -> Self {
-        Self::Bincode(value)
+impl From<rkyv::rancor::BoxedError> for DecodeError {
+    fn from(value: rkyv::rancor::BoxedError) -> Self {
+        Self::Rkyv(value)
     }
 }
 
 #[derive(Debug)]
 pub enum RecvError {
-    Bincode(bincode::error::DecodeError),
-    TrailingBytes,
+    Rkyv(rkyv::rancor::BoxedError),
     Io(io::Error),
     Os(OsError),
     Disconnected,
@@ -45,8 +41,7 @@ pub enum RecvError {
 impl fmt::Display for RecvError {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Self::Bincode(ref err) => write!(fmt, "bincode error: {}", err),
-            Self::TrailingBytes => write!(fmt, "trailing bytes"),
+            Self::Rkyv(ref err) => write!(fmt, "rkyv error: {}", err),
             Self::Io(ref err) => write!(fmt, "io error: {}", err),
             Self::Os(ref err) => write!(fmt, "os error: {}", err),
             Self::Disconnected => write!(fmt, "disconnected"),
@@ -57,8 +52,7 @@ impl fmt::Display for RecvError {
 impl StdError for RecvError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match *self {
-            Self::Bincode(ref err) => Some(err),
-            Self::TrailingBytes => None,
+            Self::Rkyv(ref err) => Some(err),
             Self::Io(ref err) => Some(err),
             Self::Os(ref err) => Some(err),
             Self::Disconnected => None,
@@ -66,17 +60,16 @@ impl StdError for RecvError {
     }
 }
 
-impl From<bincode::error::DecodeError> for RecvError {
-    fn from(value: bincode::error::DecodeError) -> Self {
-        Self::Bincode(value)
+impl From<rkyv::rancor::BoxedError> for RecvError {
+    fn from(value: rkyv::rancor::BoxedError) -> Self {
+        Self::Rkyv(value)
     }
 }
 
 impl From<DecodeError> for RecvError {
     fn from(value: DecodeError) -> Self {
         match value {
-            DecodeError::Bincode(err) => Self::Bincode(err),
-            DecodeError::TrailingBytes => Self::TrailingBytes,
+            DecodeError::Rkyv(err) => Self::Rkyv(err),
         }
     }
 }
@@ -165,7 +158,7 @@ impl From<OsError> for TryRecvError {
 
 #[derive(Debug)]
 pub enum SendError {
-    Bincode(bincode::error::EncodeError),
+    Rkyv(rkyv::rancor::BoxedError),
     Io(io::Error),
     Os(crate::platform::OsError),
     Disconnected,
@@ -174,7 +167,7 @@ pub enum SendError {
 impl fmt::Display for SendError {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Self::Bincode(ref err) => write!(fmt, "bincode error: {}", err),
+            Self::Rkyv(ref err) => write!(fmt, "rkyv error: {}", err),
             Self::Io(ref err) => write!(fmt, "io error: {}", err),
             Self::Os(ref err) => write!(fmt, "os error: {}", err),
             Self::Disconnected => write!(fmt, "disconnected"),
@@ -185,7 +178,7 @@ impl fmt::Display for SendError {
 impl StdError for SendError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match *self {
-            Self::Bincode(ref err) => Some(err),
+            Self::Rkyv(ref err) => Some(err),
             Self::Io(ref err) => Some(err),
             Self::Os(ref err) => Some(err),
             Self::Disconnected => None,
@@ -193,9 +186,9 @@ impl StdError for SendError {
     }
 }
 
-impl From<bincode::error::EncodeError> for SendError {
-    fn from(value: bincode::error::EncodeError) -> Self {
-        Self::Bincode(value)
+impl From<rkyv::rancor::BoxedError> for SendError {
+    fn from(value: rkyv::rancor::BoxedError) -> Self {
+        Self::Rkyv(value)
     }
 }
 

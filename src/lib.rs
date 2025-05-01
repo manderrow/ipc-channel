@@ -12,6 +12,7 @@
 pub mod error;
 pub mod ipc;
 pub mod platform;
+mod util;
 
 #[cfg(test)]
 mod test;

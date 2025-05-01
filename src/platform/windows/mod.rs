@@ -14,7 +14,7 @@ use std::{
     ffi::CString,
     fmt, io,
     marker::{PhantomData, Send, Sync},
-    mem,
+    mem::{self, ManuallyDrop},
     ops::{Deref, DerefMut, RangeFrom},
     ptr, slice,
     sync::LazyLock,
@@ -1392,7 +1392,7 @@ impl OsIpcSender {
 
         let oob_size = if oob.needs_to_be_sent() {
             rkyv::util::with_arena(|arena| {
-                let mut counter = CountingWriter::default();
+                let mut counter = crate::util::CountingWriter::default();
                 rkyv::api::serialize_using::<_, rkyv::rancor::Error>(
                     &oob,
                     &mut rkyv::ser::Serializer::new(
@@ -1488,48 +1488,6 @@ impl OsIpcSender {
             big_data_sender.unwrap().send_raw(data)?;
         }
 
-        Ok(())
-    }
-}
-
-#[derive(Default)]
-struct CountingWriter {
-    len: usize,
-}
-
-impl rkyv::ser::Positional for CountingWriter {
-    #[inline]
-
-    fn pos(&self) -> usize {
-        self.len
-    }
-}
-
-impl<E: rkyv::rancor::Source> rkyv::ser::Writer<E> for CountingWriter {
-    fn write(&mut self, bytes: &[u8]) -> Result<(), E> {
-        self.len = self.len.checked_add(bytes.len()).ok_or_else(|| {
-            #[derive(Debug)]
-            struct BufferOverflow {
-                write_len: usize,
-                len: usize,
-            }
-
-            impl fmt::Display for BufferOverflow {
-                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                    write!(
-                        f,
-                        "overflowed counter while adding {} bytes to existing count {}",
-                        self.write_len, self.len,
-                    )
-                }
-            }
-
-            impl std::error::Error for BufferOverflow {}
-            E::new(BufferOverflow {
-                write_len: bytes.len(),
-                len: self.len,
-            })
-        })?;
         Ok(())
     }
 }
@@ -1941,6 +1899,7 @@ pub enum OsIpcChannel {
     Receiver(OsIpcReceiver),
 }
 
+#[must_use]
 #[derive(Debug, PartialEq)]
 pub struct OsOpaqueIpcChannel {
     handle: WinHandle,
@@ -1953,7 +1912,7 @@ impl Drop for OsOpaqueIpcChannel {
         // The `OsOpaqueIpcChannel` objects should always be used,
         // i.e. converted with `to_sender()` or `to_receiver()` --
         // so the value should already be unset before the object gets dropped.
-        debug_assert!(!self.handle.is_valid());
+        assert!(!self.handle.is_valid(), "OsOpaqueIpcChannel leaked");
     }
 }
 
@@ -1962,12 +1921,18 @@ impl OsOpaqueIpcChannel {
         OsOpaqueIpcChannel { handle }
     }
 
-    pub fn to_receiver(&mut self) -> OsIpcReceiver {
-        OsIpcReceiver::from_handle(self.handle.take())
+    pub fn consume(&mut self) -> OsOpaqueIpcChannel {
+        OsOpaqueIpcChannel::new(self.handle.take())
     }
 
-    pub fn to_sender(&mut self) -> OsIpcSender {
-        OsIpcSender::from_handle(self.handle.take())
+    pub fn into_receiver(self) -> OsIpcReceiver {
+        let mut this = ManuallyDrop::new(self);
+        OsIpcReceiver::from_handle(this.handle.take())
+    }
+
+    pub fn into_sender(self) -> OsIpcSender {
+        let mut this = ManuallyDrop::new(self);
+        OsIpcSender::from_handle(this.handle.take())
     }
 }
 

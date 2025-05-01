@@ -28,7 +28,7 @@ use std::fmt::{self, Debug, Formatter};
 use std::hash::BuildHasherDefault;
 use std::io;
 use std::marker::PhantomData;
-use std::mem;
+use std::mem::{self, ManuallyDrop};
 use std::ops::{Deref, RangeFrom};
 use std::os::fd::RawFd;
 use std::ptr;
@@ -143,9 +143,7 @@ impl OsIpcReceiver {
     }
 
     fn consume_fd(&self) -> c_int {
-        let fd = self.fd.get();
-        self.fd.set(-1);
-        fd
+        self.fd.replace(-1)
     }
 
     pub fn consume(&self) -> OsIpcReceiver {
@@ -175,7 +173,7 @@ impl Drop for SharedFileDescriptor {
     fn drop(&mut self) {
         unsafe {
             let result = libc::close(self.0);
-            assert!(thread::panicking() || result == 0);
+            assert_eq!(result, 0);
         }
     }
 }
@@ -262,9 +260,15 @@ impl OsIpcSender {
     ) -> Result<(), UnixError> {
         let mut fds = Vec::new();
         for channel in channels.iter() {
+            debug_assert!(channel.fd() > 0, "Invalid channel fd: {}", channel.fd());
             fds.push(channel.fd());
         }
         for shared_memory_region in shared_memory_regions.iter() {
+            debug_assert!(
+                shared_memory_region.store.fd() > 0,
+                "Invalid shared memory region fd: {}",
+                shared_memory_region.store.fd()
+            );
             fds.push(shared_memory_region.store.fd());
         }
 
@@ -601,6 +605,7 @@ pub enum OsIpcSelectionResult {
     ChannelClosed(u64),
 }
 
+#[must_use]
 #[derive(PartialEq, Debug)]
 pub struct OsOpaqueIpcChannel {
     fd: c_int,
@@ -613,7 +618,7 @@ impl Drop for OsOpaqueIpcChannel {
         // The `OsOpaqueIpcChannel` objects should always be used,
         // i.e. converted with `to_sender()` or `to_receiver()` --
         // so the value should already be unset before the object gets dropped.
-        debug_assert!(self.fd == -1);
+        assert_eq!(self.fd, -1, "OsOpaqueIpcChannel leaked");
     }
 }
 
@@ -622,12 +627,20 @@ impl OsOpaqueIpcChannel {
         OsOpaqueIpcChannel { fd }
     }
 
-    pub fn to_sender(&mut self) -> OsIpcSender {
-        OsIpcSender::from_fd(mem::replace(&mut self.fd, -1))
+    pub fn consume(&mut self) -> OsOpaqueIpcChannel {
+        OsOpaqueIpcChannel {
+            fd: mem::replace(&mut self.fd, -1),
+        }
     }
 
-    pub fn to_receiver(&mut self) -> OsIpcReceiver {
-        OsIpcReceiver::from_fd(mem::replace(&mut self.fd, -1))
+    pub fn into_sender(self) -> OsIpcSender {
+        let this = ManuallyDrop::new(self);
+        OsIpcSender::from_fd(this.fd)
+    }
+
+    pub fn into_receiver(self) -> OsIpcReceiver {
+        let this = ManuallyDrop::new(self);
+        OsIpcReceiver::from_fd(this.fd)
     }
 }
 
@@ -1033,7 +1046,7 @@ fn recv(fd: c_int, blocking_mode: BlockingMode) -> Result<IpcMessage, UnixError>
     //
     // The initial fragment carries the receive end of a dedicated channel
     // through which all the remaining fragments will be coming in.
-    let dedicated_rx = channels.pop().unwrap().to_receiver();
+    let dedicated_rx = channels.pop().unwrap().into_receiver();
 
     // Extend the buffer to hold the entire message, without initialising the memory.
     let len = main_data_buffer.len();

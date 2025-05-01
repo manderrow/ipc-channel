@@ -42,7 +42,7 @@ fn sender_transfer() {
         .unwrap();
     let mut ipc_message = super_rx.recv().unwrap();
     assert_eq!(ipc_message.os_ipc_channels.len(), 1);
-    let sub_tx = ipc_message.os_ipc_channels.pop().unwrap().to_sender();
+    let sub_tx = ipc_message.os_ipc_channels.pop().unwrap().into_sender();
     sub_tx.send(data, vec![], vec![]).unwrap();
     let ipc_message = sub_rx.recv().unwrap();
     assert_eq!(ipc_message, IpcMessage::from_data(data.to_vec()));
@@ -58,7 +58,7 @@ fn receiver_transfer() {
         .unwrap();
     let mut ipc_message = super_rx.recv().unwrap();
     assert_eq!(ipc_message.os_ipc_channels.len(), 1);
-    let sub_rx = ipc_message.os_ipc_channels.pop().unwrap().to_receiver();
+    let sub_rx = ipc_message.os_ipc_channels.pop().unwrap().into_receiver();
     sub_tx.send(data, vec![], vec![]).unwrap();
     let ipc_message = sub_rx.recv().unwrap();
     assert_eq!(ipc_message, IpcMessage::from_data(data.to_vec()));
@@ -80,12 +80,12 @@ fn multisender_transfer() {
     let mut ipc_message1 = super_rx.recv().unwrap();
     assert_eq!(ipc_message1.os_ipc_channels.len(), 2);
 
-    let sub0_tx = ipc_message1.os_ipc_channels.remove(0).to_sender();
+    let sub0_tx = ipc_message1.os_ipc_channels.remove(0).into_sender();
     sub0_tx.send(data, vec![], vec![]).unwrap();
     let ipc_message2 = sub0_rx.recv().unwrap();
     assert_eq!(ipc_message2, IpcMessage::from_data(data.to_vec()));
 
-    let sub1_tx = ipc_message1.os_ipc_channels.remove(0).to_sender();
+    let sub1_tx = ipc_message1.os_ipc_channels.remove(0).into_sender();
     sub1_tx.send(data, vec![], vec![]).unwrap();
     let ipc_message3 = sub1_rx.recv().unwrap();
     assert_eq!(ipc_message3, IpcMessage::from_data(data.to_vec()));
@@ -116,7 +116,7 @@ fn medium_data_with_sender_transfer() {
         .unwrap();
     let mut ipc_message = super_rx.recv().unwrap();
     assert_eq!(ipc_message.os_ipc_channels.len(), 1);
-    let sub_tx = ipc_message.os_ipc_channels.pop().unwrap().to_sender();
+    let sub_tx = ipc_message.os_ipc_channels.pop().unwrap().into_sender();
     sub_tx.send(data, vec![], vec![]).unwrap();
     let ipc_message = sub_rx.recv().unwrap();
     assert_eq!(ipc_message, IpcMessage::from_data(data.to_vec()));
@@ -174,7 +174,7 @@ fn big_data_with_sender_transfer() {
         .map(|i| (i % 251) as u8)
         .collect();
     let data: &[u8] = &data[..];
-    let sub_tx = ipc_message.os_ipc_channels[0].to_sender();
+    let sub_tx = ipc_message.os_ipc_channels.remove(0).into_sender();
     sub_tx.send(data, vec![], vec![]).unwrap();
     let ipc_message = sub_rx.recv().unwrap();
     assert_eq!(ipc_message.data.len(), data.len());
@@ -201,12 +201,12 @@ fn with_n_fds(n: usize, size: usize) {
     let data: Vec<u8> = (0..get_max_fragment_size())
         .map(|i| (i % 251) as u8)
         .collect();
-    for (mut sender_fd, sub_rx) in ipc_message
+    for (sender_fd, sub_rx) in ipc_message
         .os_ipc_channels
         .into_iter()
         .zip(receivers.into_iter())
     {
-        let sub_tx = sender_fd.to_sender();
+        let sub_tx = sender_fd.into_sender();
         sub_tx.send(&data, vec![], vec![]).unwrap();
         let ipc_message = sub_rx.recv().unwrap();
         assert_eq!(ipc_message.data.len(), data.len());
@@ -323,12 +323,12 @@ macro_rules! create_big_data_with_n_fds {
                 .map(|i| (i % 251) as u8)
                 .collect();
             let data: &[u8] = &data[..];
-            for (mut sender_fd, sub_rx) in ipc_message
+            for (sender_fd, sub_rx) in ipc_message
                 .os_ipc_channels
                 .into_iter()
                 .zip(receivers.into_iter())
             {
-                let sub_tx = sender_fd.to_sender();
+                let sub_tx = sender_fd.into_sender();
                 sub_tx.send(data, vec![], vec![]).unwrap();
                 let ipc_message = sub_rx.recv().unwrap();
                 assert_eq!(ipc_message.data.len(), data.len());
@@ -468,7 +468,7 @@ fn receiver_set_eintr() {
     // Wait until the child is ready
     let (server, mut ipc_message) = server.accept().unwrap();
     assert!(ipc_message.data == b" Ready! ");
-    let tx1 = ipc_message.os_ipc_channels.first_mut().unwrap().to_sender();
+    let tx1 = ipc_message.os_ipc_channels.remove(0).into_sender();
     rustix::process::kill_process(child_pid, rustix::process::Signal::STOP).unwrap();
     thread::sleep(Duration::from_millis(42));
     rustix::process::kill_process(child_pid, rustix::process::Signal::CONT).unwrap();
@@ -772,7 +772,7 @@ fn cross_process_sender_transfer_spawn() {
 
     let (super_rx, mut ipc_message) = server.accept().unwrap();
     assert_eq!(ipc_message.os_ipc_channels.len(), 1);
-    let sub_tx = ipc_message.os_ipc_channels[0].to_sender();
+    let sub_tx = ipc_message.os_ipc_channels.remove(0).into_sender();
     let data: &[u8] = b"baz";
     sub_tx.send(data, vec![], vec![]).unwrap();
 
@@ -803,7 +803,7 @@ fn cross_process_sender_transfer_fork() {
 
     let (super_rx, mut ipc_message) = server.accept().unwrap();
     assert_eq!(ipc_message.os_ipc_channels.len(), 1);
-    let sub_tx = ipc_message.os_ipc_channels[0].to_sender();
+    let sub_tx = ipc_message.os_ipc_channels.remove(0).into_sender();
     let data: &[u8] = b"baz";
     sub_tx.send(data, vec![], vec![]).unwrap();
 
@@ -1114,12 +1114,12 @@ fn cross_process_two_step_transfer_spawn() {
         // get two_rx from the other process
         let mut ipc_message = sub_rx.recv().unwrap();
         assert_eq!(ipc_message.os_ipc_channels.len(), 1);
-        let two_rx = ipc_message.os_ipc_channels[0].to_receiver();
+        let two_rx = ipc_message.os_ipc_channels.remove(0).into_receiver();
 
         // get one_rx from two_rx's buffer
         let mut ipc_message = two_rx.recv().unwrap();
         assert_eq!(ipc_message.os_ipc_channels.len(), 1);
-        let one_rx = ipc_message.os_ipc_channels[0].to_receiver();
+        let one_rx = ipc_message.os_ipc_channels.remove(0).into_receiver();
 
         // get a cookie from one_rx
         let ipc_message = one_rx.recv().unwrap();
@@ -1154,7 +1154,7 @@ fn cross_process_two_step_transfer_spawn() {
     // The other process will have sent us a transmit channel in received channels
     let (super_rx, mut ipc_message) = server.accept().unwrap();
     assert_eq!(ipc_message.os_ipc_channels.len(), 1);
-    let sub_tx = ipc_message.os_ipc_channels[0].to_sender();
+    let sub_tx = ipc_message.os_ipc_channels.remove(0).into_sender();
 
     // Send the outer payload channel, so the server can use it to
     // retrieve the inner payload and the cookie

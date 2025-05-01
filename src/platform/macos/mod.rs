@@ -603,6 +603,7 @@ impl OsIpcChannel {
     }
 }
 
+#[must_use]
 #[derive(PartialEq, Debug)]
 pub struct OsOpaqueIpcChannel {
     port: mach_port_t,
@@ -611,7 +612,7 @@ pub struct OsOpaqueIpcChannel {
 impl Drop for OsOpaqueIpcChannel {
     fn drop(&mut self) {
         // Make sure we don't leak!
-        debug_assert_eq!(self.port, MACH_PORT_NULL);
+        assert_eq!(self.port, MACH_PORT_NULL, "OsOpaqueIpcChannel leaked");
     }
 }
 
@@ -620,15 +621,19 @@ impl OsOpaqueIpcChannel {
         OsOpaqueIpcChannel { port: name }
     }
 
-    pub fn to_sender(&mut self) -> OsIpcSender {
+    pub fn consume(&mut self) -> OsOpaqueIpcChannel {
+        Self::from_name(mem::replace(&mut self.port, MACH_PORT_NULL))
+    }
+
+    pub fn into_sender(self) -> OsIpcSender {
         OsIpcSender {
-            port: mem::replace(&mut self.port, MACH_PORT_NULL),
+            port: self.port,
             nosync_marker: PhantomData,
         }
     }
 
-    pub fn to_receiver(&mut self) -> OsIpcReceiver {
-        OsIpcReceiver::from_name(mem::replace(&mut self.port, MACH_PORT_NULL))
+    pub fn into_receiver(self) -> OsIpcReceiver {
+        OsIpcReceiver::from_name(self.port)
     }
 }
 

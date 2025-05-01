@@ -10,8 +10,6 @@
 use crate::error;
 use crate::ipc::IpcReceiver;
 use crate::ipc::{self, IpcReceiverSet, IpcSender, IpcSharedMemory};
-use bincode::{Decode, Encode};
-use std::cell::RefCell;
 use std::env;
 use std::process::{self, Command, Stdio};
 use std::rc::Rc;
@@ -358,8 +356,8 @@ fn try_recv_timeout() {
 
 #[test]
 fn multiple_paths_to_a_sender() {
-    let person = ("Patrick Walton".to_owned(), 29);
-    let (sub_tx, sub_rx) = ipc::channel().unwrap();
+    let person = ("Patrick Walton".to_owned(), 29i32);
+    let (sub_tx, sub_rx) = ipc::channel::<(String, i32)>().unwrap();
     let person_and_sender = Rc::new((person.clone(), sub_tx));
     let send_data = vec![
         person_and_sender.clone(),
@@ -414,53 +412,6 @@ fn test_so_linger() {
         },
     };
     assert_eq!(val, 42);
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct HasWeirdSerializer(Option<String>);
-
-thread_local! { static WEIRD_CHANNEL: RefCell<Option<IpcSender<HasWeirdSerializer>>> = const { RefCell::new(None) } }
-
-impl Encode for HasWeirdSerializer {
-    fn encode<E: bincode::enc::Encoder>(
-        &self,
-        encoder: &mut E,
-    ) -> Result<(), bincode::error::EncodeError> {
-        if self.0.is_some() {
-            WEIRD_CHANNEL.with(|chan| {
-                chan.borrow()
-                    .as_ref()
-                    .unwrap()
-                    .send(HasWeirdSerializer(None))
-                    .unwrap();
-            });
-        }
-        self.0.encode(encoder)
-    }
-}
-
-impl<C> Decode<C> for HasWeirdSerializer {
-    fn decode<D: bincode::de::Decoder<Context = C>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        Ok(HasWeirdSerializer(Decode::decode(decoder)?))
-    }
-}
-
-#[test]
-#[ignore = "I don't want to support this"]
-fn test_reentrant() {
-    let null = HasWeirdSerializer(None);
-    let hello = HasWeirdSerializer(Some(String::from("hello")));
-    let (sender, receiver) = ipc::channel().unwrap();
-    WEIRD_CHANNEL.with(|chan| {
-        *chan.borrow_mut() = Some(sender.clone());
-    });
-    sender.send(hello.clone()).unwrap();
-    assert_eq!(null, receiver.recv().unwrap());
-    assert_eq!(hello, receiver.recv().unwrap());
-    sender.send(null.clone()).unwrap();
-    assert_eq!(null, receiver.recv().unwrap());
 }
 
 #[test]
