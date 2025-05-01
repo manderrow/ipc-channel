@@ -64,9 +64,6 @@ mod aliased_cell;
 
 use self::aliased_cell::AliasedCell;
 
-#[cfg(test)]
-mod tests;
-
 static CURRENT_PROCESS_ID: LazyLock<u32> = LazyLock::new(|| unsafe { GetCurrentProcessId() });
 static CURRENT_PROCESS_HANDLE: LazyLock<WinHandle> =
     LazyLock::new(|| WinHandle::new(unsafe { GetCurrentProcess() }));
@@ -231,7 +228,7 @@ impl<'data> Message<'data> {
 /// in another channel's buffer when that channel got transferred to another
 /// process.  On Windows, we duplicate handles on the sender side to a specific
 /// receiver.  If the wrong receiver gets it, those handles are not valid.
-/// These handles are recovered by the `recover_handles` method.
+/// These handles are recovered by the `MessageReader::get_message` method.
 #[derive(Debug, rkyv::Archive, rkyv::Serialize)]
 struct OutOfBandMessage {
     target_process_id: u32,
