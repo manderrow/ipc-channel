@@ -1265,9 +1265,9 @@ impl Clone for OsIpcSender {
 }
 
 impl OsIpcSender {
-    pub fn connect(name: String) -> Result<OsIpcSender, WinError> {
-        let pipe_name = make_pipe_name(&Uuid::parse_str(&name).unwrap());
-        OsIpcSender::connect_named(&pipe_name)
+    pub fn connect(name: String) -> Result<OsIpcSender, ConnectError> {
+        let pipe_name = make_pipe_name(&Uuid::parse_str(&name).map_err(ConnectError::UuidError)?);
+        OsIpcSender::connect_named(&pipe_name).map_err(ConnectError::WinError)
     }
 
     pub fn get_max_fragment_size() -> usize {
@@ -1930,6 +1930,32 @@ impl OsOpaqueIpcChannel {
     pub fn into_sender(self) -> OsIpcSender {
         let mut this = ManuallyDrop::new(self);
         OsIpcSender::from_handle(this.handle.take())
+    }
+}
+
+#[derive(Debug)]
+pub enum ConnectError {
+    WinError(WinError),
+    UuidError(uuid::Error),
+}
+
+impl fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WinError(e) => write!(f, "{}", e),
+            Self::UuidError(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+impl std::error::Error for ConnectError {}
+
+impl From<ConnectError> for io::Error {
+    fn from(error: ConnectError) -> io::Error {
+        match error {
+            ConnectError::WinError(err) => io::Error::from_raw_os_error(err.code().0),
+            ConnectError::UuidError(e) => io::Error::other(e),
+        }
     }
 }
 
