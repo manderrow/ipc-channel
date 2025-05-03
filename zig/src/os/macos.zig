@@ -89,7 +89,7 @@ pub const Receiver = struct {
             Port.null.name,
         ));
 
-        var allocated_buffer: std.ArrayListAlignedUnmanaged(u8, 4) = .{};
+        var allocated_buffer: std.ArrayListAlignedUnmanaged(u8, .@"4") = .empty;
         defer allocated_buffer.deinit(alloc);
 
         while (true) {
@@ -127,7 +127,7 @@ pub const Receiver = struct {
         var descriptors: [*]mach.mach_msg_descriptor = @ptrCast(@as([*]Message, @ptrCast(message)) + 1);
         var remaining = message.body.msgh_descriptor_count;
 
-        var ports: std.ArrayListUnmanaged(OpaqueChannel) = .{};
+        var ports: std.ArrayListUnmanaged(OpaqueChannel) = .empty;
         // TODO: errdefer cleanup ports
         while (remaining > 0 and descriptors[0].type == .port) : (remaining -= 1) {
             const port_descriptors: [*]mach.mach_msg_port_descriptor_t = @ptrCast(descriptors);
@@ -143,7 +143,7 @@ pub const Receiver = struct {
             descriptors = @ptrCast(port_descriptors + 1);
         }
 
-        var shared_memory_regions: std.ArrayListUnmanaged(SharedMemory) = .{};
+        var shared_memory_regions: std.ArrayListUnmanaged(SharedMemory) = .empty;
         // TODO: errdefer cleanup smrs
         while (remaining > 0 and descriptors[0].type == .ool) : (remaining -= 1) {
             const ool_descriptors: [*]mach.mach_msg_ool_descriptor_t = @ptrCast(descriptors);
@@ -270,7 +270,7 @@ pub const Sender = struct {
 
         const size = std.math.cast(c_uint, Message.sizeOf(send_data, channels.len, smr_count)) orelse return error.SendTooLarge;
 
-        const message_buf = try alloc.alignedAlloc(u8, @alignOf(Message), size);
+        const message_buf = try alloc.alignedAlloc(u8, .of(Message), size);
         defer alloc.free(message_buf);
 
         const message: *Message = @ptrCast(message_buf);
@@ -416,7 +416,7 @@ pub const ReceiverSet = struct {
     pub fn new() !@This() {
         return .{
             .port = try Port.alloc(.port_set),
-            .ports = .{},
+            .ports = .empty,
         };
     }
 
