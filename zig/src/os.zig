@@ -3,33 +3,54 @@ const std = @import("std");
 
 pub const os = switch (builtin.os.tag) {
     .macos => @import("os/macos.zig"),
-    else => |os_tag| @compileError("Unsupported OS: " ++ @tagName(os_tag)),
+    .windows => @compileError("TODO: Windows implementation"),
+    else => @import("os/unix.zig"),
 };
 
 pub const channel = os.channel;
-pub const Channel = os.OsIpcChannel;
-pub const Sender = os.OsIpcSender;
-pub const Receiver = os.OsIpcReceiver;
+pub const Channel = os.Channel;
+pub const Sender = os.Sender;
+pub const Receiver = os.Receiver;
+pub const ReceiverSet = os.ReceiverSet;
 pub const OneShotServer = os.OneShotServer;
-pub const OpaqueChannel = os.OsOpaqueIpcChannel;
-pub const SharedMemory = os.OsIpcSharedMemory;
+pub const OpaqueChannel = os.OpaqueChannel;
+pub const SharedMemory = os.SharedMemory;
 
 pub const IpcMessage = struct {
     data: []u8,
     channels: []OpaqueChannel,
     shared_memory_regions: []SharedMemory,
 
-    pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
+    pub fn deinit(self: @This(), alloc: std.mem.Allocator) void {
         alloc.free(self.data);
-        for (self.channels) |*chan| {
+        for (self.channels) |chan| {
             chan.deinit();
         }
         alloc.free(self.channels);
-        for (self.shared_memory_regions) |*smr| {
+        for (self.shared_memory_regions) |smr| {
             smr.deinit();
         }
         alloc.free(self.shared_memory_regions);
     }
+};
+
+pub const SelectionResult = struct {
+    id: os.ReceiverId,
+    event: Event,
+
+    pub const Event = union(enum) {
+        closed,
+        received: IpcMessage,
+
+        pub const Tag = @typeInfo(Event).@"union".tag_type.?;
+    };
+};
+
+pub const BlockingMode = union(enum) {
+    blocking,
+    nonblocking,
+    /// Measured in milliseconds.
+    timeout: c_uint,
 };
 
 fn expectEqualStringMessages(
@@ -52,7 +73,7 @@ test "simple" {
 
     const data = "1234567";
     try chan.sd.send(alloc, data, &.{}, &.{});
-    var ipc_message = try chan.rc.recv(alloc);
+    const ipc_message = try chan.rc.recv(alloc);
     defer ipc_message.deinit(alloc);
     try expectEqualStringMessages(data, 0, 0, ipc_message);
 }
@@ -60,11 +81,11 @@ test "simple" {
 test "sender transfer" {
     const alloc = std.testing.allocator;
 
-    var super = try channel();
+    const super = try channel();
     defer super.rc.deinit();
     defer super.sd.deinit();
 
-    var sub = try channel();
+    const sub = try channel();
     defer sub.rc.deinit();
     // sub.sd is immediately handed off to super.sd.send(...), so don't defer dealloc
 
@@ -73,22 +94,63 @@ test "sender transfer" {
     try super.sd
         .send(alloc, data, &ports, &.{});
     {
-        var ipc_message = try super.rc.recv(alloc);
+        const ipc_message = try super.rc.recv(alloc);
         defer ipc_message.deinit(alloc);
 
         try std.testing.expectEqual(1, ipc_message.channels.len);
-        var sub_tx = try ipc_message.channels[ipc_message.channels.len - 1].asSender();
+        const sub_tx = try ipc_message.channels[ipc_message.channels.len - 1].asSender();
 
         try sub_tx.send(alloc, data, &.{}, &.{});
     }
 
-    var ipc_message = try sub.rc.recv(alloc);
+    const ipc_message = try sub.rc.recv(alloc);
     defer ipc_message.deinit(alloc);
     try expectEqualStringMessages(data, 0, 0, ipc_message);
 }
 
 test "receiver transfer" {
-    return error.ToDo;
+    const alloc = std.testing.allocator;
+
+    const super = try channel();
+    defer super.rc.deinit();
+    defer super.sd.deinit();
+
+    const sub = try channel();
+    defer sub.sd.deinit();
+    // sub.rc is immediately handed off to super.sd.send(...), so don't defer dealloc
+
+    const data = "foo";
+    var ports: [1]Channel = .{.{ .receiver = sub.rc }};
+    try super.sd
+        .send(alloc, data, &ports, &.{});
+    const sub_rx: os.Receiver = try (blk: {
+        const ipc_message = try super.rc.recv(alloc);
+        defer {
+            alloc.free(ipc_message.data);
+            alloc.free(ipc_message.channels);
+            for (ipc_message.shared_memory_regions) |*smr| {
+                smr.deinit();
+            }
+            alloc.free(ipc_message.shared_memory_regions);
+        }
+        {
+            errdefer {
+                for (ipc_message.channels) |*chan| {
+                    chan.deinit();
+                }
+            }
+            try std.testing.expectEqual(1, ipc_message.channels.len);
+        }
+
+        const chan = ipc_message.channels[ipc_message.channels.len - 1];
+        break :blk chan;
+    }).asReceiver();
+
+    try sub.sd.send(alloc, data, &.{}, &.{});
+
+    var ipc_message = try sub_rx.recv(alloc);
+    defer ipc_message.deinit(alloc);
+    try expectEqualStringMessages(data, 0, 0, ipc_message);
 }
 
 test "multisender transfer" {
@@ -131,8 +193,68 @@ test "concurrent_senders" {
     return error.ToDo;
 }
 
-test "receiver_set" {
-    return error.ToDo;
+test "receiver set" {
+    const alloc = std.testing.allocator;
+
+    const chan0 = try channel();
+    const chan1 = try channel();
+    var rx_set: ReceiverSet = try .new();
+    defer rx_set.deinit(alloc);
+    const rx0_id = try rx_set.add(alloc, chan0.rc);
+    const rx1_id = try rx_set.add(alloc, chan1.rc);
+
+    const data = "1234567";
+    try chan0.sd.send(alloc, data, &.{}, &.{});
+    {
+        const result = try rx_set.select(alloc);
+        try std.testing.expectEqual(rx0_id, result.id);
+        try std.testing.expectEqual(SelectionResult.Event.Tag.received, @as(SelectionResult.Event.Tag, result.event));
+        var ipc_message = result.event.received;
+        defer ipc_message.deinit(alloc);
+        try std.testing.expectEqualSlices(u8, data, ipc_message.data);
+    }
+
+    try chan1.sd.send(alloc, data, &.{}, &.{});
+    {
+        const result = try rx_set.select(alloc);
+        try std.testing.expectEqual(rx1_id, result.id);
+        try std.testing.expectEqual(SelectionResult.Event.Tag.received, @as(SelectionResult.Event.Tag, result.event));
+        var ipc_message = result.event.received;
+        defer ipc_message.deinit(alloc);
+        try std.testing.expectEqualSlices(u8, data, ipc_message.data);
+    }
+
+    try chan0.sd.send(alloc, data, &.{}, &.{});
+    try chan1.sd.send(alloc, data, &.{}, &.{});
+    var received0 = false;
+    var received1 = false;
+    while (!received0 or !received1) {
+        const results = try rx_set.selectMany(alloc);
+        defer {
+            for (results) |*result| {
+                switch (result.event) {
+                    .received => |*msg| {
+                        msg.deinit(alloc);
+                    },
+                    .closed => {},
+                }
+            }
+            alloc.free(results);
+        }
+        for (results) |result| {
+            try std.testing.expectEqual(SelectionResult.Event.Tag.received, @as(SelectionResult.Event.Tag, result.event));
+            const ipc_message = result.event.received;
+            try std.testing.expectEqualSlices(u8, data, ipc_message.data);
+            try std.testing.expect(result.id.id == rx0_id.id or result.id.id == rx1_id.id);
+            if (result.id.id == rx0_id.id) {
+                try std.testing.expect(!received0);
+                received0 = true;
+            } else if (result.id.id == rx1_id.id) {
+                try std.testing.expect(!received1);
+                received1 = true;
+            }
+        }
+    }
 }
 
 test "receiver set eintr" {
@@ -186,7 +308,7 @@ test "server accept first" {
                     return;
                 };
             }
-        }.f, .{server.getName()});
+        }.f, .{server.name.span()});
         defer thread.join();
 
         break :blk try server.accept(alloc);
@@ -232,19 +354,68 @@ test "no receiver notification delayed" {
 }
 
 test "shared memory" {
-    return error.ToDo;
+    const alloc = std.testing.allocator;
+
+    const chan = try channel();
+    defer chan.rc.deinit();
+    defer chan.sd.deinit();
+
+    const data = "1234567";
+    var shmem_data: [1]SharedMemory = .{try .fromByte(0xba, 1024 * 1024)};
+    try chan.sd.send(alloc, data, &.{}, &shmem_data);
+
+    const ipc_message = try chan.rc.recv(alloc);
+    defer ipc_message.deinit(alloc);
+
+    try std.testing.expectEqualSlices(u8, data, ipc_message.data);
+    try std.testing.expectEqual(0, ipc_message.channels.len);
+    try std.testing.expectEqual(1, ipc_message.shared_memory_regions.len);
+    try std.testing.expectEqual(1024 * 1024, ipc_message.shared_memory_regions[0].data.len);
+    for (ipc_message.shared_memory_regions[0].data) |b| {
+        try std.testing.expectEqual(0xba, b);
+    }
 }
 
 test "shared memory clone" {
-    return error.ToDo;
+    const shmem_data_0: SharedMemory = try .fromByte(0xba, 1024 * 1024);
+    const shmem_data_1 = try shmem_data_0.clone();
+    try std.testing.expectEqualSlices(u8, shmem_data_0.data, shmem_data_1.data);
 }
 
 test "try recv" {
-    return error.ToDo;
+    const alloc = std.testing.allocator;
+
+    var chan = try channel();
+    defer chan.sd.deinit();
+    defer chan.rc.deinit();
+    try std.testing.expectError(error.Empty, chan.rc.tryRecv(alloc));
+    const data = "1234567";
+    try chan.sd.send(alloc, data, &.{}, &.{});
+    var ipc_message = try chan.rc.tryRecv(alloc);
+    defer ipc_message.deinit(alloc);
+    try expectEqualStringMessages(data, 0, 0, ipc_message);
+    try std.testing.expectError(error.Empty, chan.rc.tryRecv(alloc));
 }
 
 test "no senders notification try recv" {
-    return error.ToDo;
+    const alloc = std.testing.allocator;
+
+    const chan = try channel();
+    defer chan.rc.deinit();
+    {
+        errdefer chan.sd.deinit();
+        try std.testing.expectError(error.Empty, chan.rc.tryRecv(alloc));
+    }
+    chan.sd.deinit();
+    while (true) {
+        const msg = chan.rc.tryRecv(alloc) catch |e| switch (e) {
+            error.Empty => continue,
+            error.ChannelClosed => break,
+            else => return e,
+        };
+        msg.deinit(alloc);
+        return error.TestExpectedError;
+    }
 }
 
 test "no senders notification try recv delayed" {

@@ -2,11 +2,12 @@ const std = @import("std");
 
 const os = @import("../os.zig");
 const util = @import("../util.zig");
+const BlockingMode = os.BlockingMode;
+const IpcMessage = os.IpcMessage;
+const SelectionResult = os.SelectionResult;
 
 const bootstrap = @import("macos/bootstrap.zig");
 const mach = @import("macos/mach.zig");
-
-const IpcMessage = os.IpcMessage;
 
 const kern_return_t = mach.kern_return_t;
 
@@ -37,17 +38,17 @@ const MACH_SEND_MSG: i32 = 1;
 const TASK_BOOTSTRAP_PORT: i32 = 4;
 const VM_INHERIT_SHARE: std.c.vm_inherit_t = 0;
 
-pub fn channel() !struct { sd: OsIpcSender, rc: OsIpcReceiver } {
-    const receiver = try OsIpcReceiver.new();
+pub fn channel() !struct { sd: Sender, rc: Receiver } {
+    const receiver = try Receiver.new();
     const sender = try receiver.sender();
-    try receiver.request_no_senders_notification();
+    try receiver.requestNoSendersNotification();
     return .{ .sd = sender, .rc = receiver };
 }
 
-pub const OsIpcReceiver = struct {
+pub const Receiver = struct {
     port: Port,
 
-    pub fn new() !OsIpcReceiver {
+    pub fn new() !Receiver {
         const port = try Port.alloc(.recv);
         var limits: mach.mach_port_limits = .{
             .mpl_qlimit = MACH_PORT_QLIMIT_MAX,
@@ -60,12 +61,11 @@ pub const OsIpcReceiver = struct {
         return .{ .port = port };
     }
 
-    pub fn deinit(self: *OsIpcReceiver) void {
-        defer self.port = .null;
+    pub fn deinit(self: Receiver) void {
         self.port.release(.recv) catch |e| std.debug.panic("mach_port_mod_refs: {}", .{e});
     }
 
-    pub fn select(self: OsIpcReceiver, alloc: std.mem.Allocator, blocking_mode: BlockingMode) !OsIpcSelectionResult {
+    pub fn select(self: Receiver, alloc: std.mem.Allocator, blocking_mode: BlockingMode) !SelectionResult {
         var buffer: [SMALL_MESSAGE_SIZE]u8 align(4) = undefined;
         try setupReceiveBuffer(&buffer, self.port);
         var message: *Message = @ptrCast(&buffer);
@@ -127,7 +127,7 @@ pub const OsIpcReceiver = struct {
         var descriptors: [*]mach.mach_msg_descriptor = @ptrCast(@as([*]Message, @ptrCast(message)) + 1);
         var remaining = message.body.msgh_descriptor_count;
 
-        var ports: std.ArrayListUnmanaged(OsOpaqueIpcChannel) = .{};
+        var ports: std.ArrayListUnmanaged(OpaqueChannel) = .{};
         // TODO: errdefer cleanup ports
         while (remaining > 0 and descriptors[0].type == .port) : (remaining -= 1) {
             const port_descriptors: [*]mach.mach_msg_port_descriptor_t = @ptrCast(descriptors);
@@ -143,7 +143,7 @@ pub const OsIpcReceiver = struct {
             descriptors = @ptrCast(port_descriptors + 1);
         }
 
-        var shared_memory_regions: std.ArrayListUnmanaged(OsIpcSharedMemory) = .{};
+        var shared_memory_regions: std.ArrayListUnmanaged(SharedMemory) = .{};
         // TODO: errdefer cleanup smrs
         while (remaining > 0 and descriptors[0].type == .ool) : (remaining -= 1) {
             const ool_descriptors: [*]mach.mach_msg_ool_descriptor_t = @ptrCast(descriptors);
@@ -177,11 +177,11 @@ pub const OsIpcReceiver = struct {
         };
     }
 
-    pub fn sender(self: OsIpcReceiver) !OsIpcSender {
+    pub fn sender(self: Receiver) !Sender {
         return .{ .port = try self.port.extractRight(.make_send) };
     }
 
-    fn request_no_senders_notification(self: OsIpcReceiver) !void {
+    fn requestNoSendersNotification(self: Receiver) !void {
         std.debug.assert(!self.port.isNull());
         _ = try self.port.requestNotification(
             MACH_NOTIFY_NO_SENDERS,
@@ -191,8 +191,8 @@ pub const OsIpcReceiver = struct {
         );
     }
 
-    fn recv_with_blocking_mode(
-        self: OsIpcReceiver,
+    fn recvOptions(
+        self: Receiver,
         alloc: std.mem.Allocator,
         blocking_mode: BlockingMode,
     ) !IpcMessage {
@@ -203,17 +203,17 @@ pub const OsIpcReceiver = struct {
         };
     }
 
-    pub fn recv(self: OsIpcReceiver, alloc: std.mem.Allocator) !IpcMessage {
-        return self.recv_with_blocking_mode(alloc, .blocking);
+    pub fn recv(self: Receiver, alloc: std.mem.Allocator) !IpcMessage {
+        return self.recvOptions(alloc, .blocking);
     }
 
-    pub fn try_recv(self: OsIpcReceiver, alloc: std.mem.Allocator) !IpcMessage {
-        return self.recv_with_blocking_mode(alloc, .nonblocking);
+    pub fn tryRecv(self: Receiver, alloc: std.mem.Allocator) !IpcMessage {
+        return self.recvOptions(alloc, .nonblocking);
     }
 
     /// `duration` is measured in milliseconds.
-    pub fn try_recv_timeout(self: OsIpcReceiver, alloc: std.mem.Allocator, duration: u64) !IpcMessage {
-        self.recv_with_blocking_mode(alloc, .{ .timeout = duration });
+    pub fn tryRecvTimeout(self: Receiver, alloc: std.mem.Allocator, duration: u64) !IpcMessage {
+        self.recvOptions(alloc, .{ .timeout = duration });
     }
 };
 
@@ -224,20 +224,19 @@ fn getInlineSizeAndData(is_inline: *bool) struct { size: *align(1) usize, data: 
     return .{ .size = &data_size[0], .data = @ptrCast(data_size + 1) };
 }
 
-pub const OsIpcSender = struct {
+pub const Sender = struct {
     port: Port,
 
-    pub fn connect(name: [:0]const u8) !OsIpcSender {
+    pub fn connect(name: [:0]const u8) !Sender {
         const bootstrap_port = try mach.getSpecialPort(.bootstrap);
         return .{ .port = try bootstrap.look_up(bootstrap_port, name) };
     }
 
-    pub fn deinit(self: *@This()) void {
+    pub fn deinit(self: @This()) void {
         self.port.release(.send) catch |e| std.debug.panic("mach_port_deallocate: {}", .{e});
-        self.port = undefined;
     }
 
-    pub fn clone(self: @This()) KernelError!OsIpcSender {
+    pub fn clone(self: @This()) KernelError!Sender {
         var cloned_port = self.port;
         try cloned_port.addRef(.send);
         return .{
@@ -251,14 +250,14 @@ pub const OsIpcSender = struct {
 
     /// Takes ownership of the elements of `ports` and `shared_memory_regions`.
     pub fn send(
-        self: OsIpcSender,
+        self: Sender,
         alloc: std.mem.Allocator,
         data: []const u8,
-        ports: []OsIpcChannel,
-        shared_memory_regions: []OsIpcSharedMemory,
+        channels: []Channel,
+        shared_memory_regions: []SharedMemory,
     ) !void {
         errdefer {
-            for (ports) |*port| {
+            for (channels) |*port| {
                 port.deinit();
             }
             for (shared_memory_regions) |*smr| {
@@ -269,13 +268,13 @@ pub const OsIpcSender = struct {
         const send_data = try SendData.new(data);
         const smr_count = shared_memory_regions.len + @intFromBool(send_data == .out_of_line);
 
-        const size = std.math.cast(c_uint, Message.sizeOf(send_data, ports.len, smr_count)) orelse return error.SendTooLarge;
+        const size = std.math.cast(c_uint, Message.sizeOf(send_data, channels.len, smr_count)) orelse return error.SendTooLarge;
 
         const message_buf = try alloc.alignedAlloc(u8, @alignOf(Message), size);
         defer alloc.free(message_buf);
 
         const message: *Message = @ptrCast(message_buf);
-        const port_descriptor_dest: []mach.mach_msg_port_descriptor_t = @as([*]mach.mach_msg_port_descriptor_t, @ptrCast(@as([*]Message, @ptrCast(message)) + 1))[0..ports.len];
+        const port_descriptor_dest: []mach.mach_msg_port_descriptor_t = @as([*]mach.mach_msg_port_descriptor_t, @ptrCast(@as([*]Message, @ptrCast(message)) + 1))[0..channels.len];
         const shared_memory_descriptor_dest: []align(4) mach.mach_msg_ool_descriptor_t = @as([*]align(4) mach.mach_msg_ool_descriptor_t, @ptrCast(port_descriptor_dest[port_descriptor_dest.len..].ptr))[0..smr_count];
         const is_inline_dest: *bool = @as(*bool, @ptrCast(shared_memory_descriptor_dest[shared_memory_descriptor_dest.len..].ptr));
 
@@ -292,11 +291,11 @@ pub const OsIpcSender = struct {
                 .msgh_id = 0,
             },
             .body = .{
-                .msgh_descriptor_count = std.math.cast(c_uint, ports.len + shared_memory_regions.len) orelse return error.SendTooLarge,
+                .msgh_descriptor_count = std.math.cast(c_uint, channels.len + shared_memory_regions.len) orelse return error.SendTooLarge,
             },
         };
 
-        for (ports, port_descriptor_dest) |port, *dest| {
+        for (channels, port_descriptor_dest) |port, *dest| {
             dest.* = .{
                 .name = switch (port) {
                     .sender => |sd| sd.port,
@@ -356,7 +355,7 @@ pub const OsIpcSender = struct {
         if (rt == .SEND_TOO_LARGE and send_data == .@"inline") {
             _ = max_inline_size.fetchMin(send_data.@"inline".len, .seq_cst);
             // FIXME: we want to free *before* calling this again, to conserve memory.
-            return self.send(alloc, send_data.@"inline", ports, shared_memory_regions);
+            return self.send(alloc, send_data.@"inline", channels, shared_memory_regions);
         }
         try mach.checkMachReturn(rt);
     }
@@ -366,52 +365,51 @@ var max_inline_size = std.atomic.Value(usize).init(std.math.maxInt(usize));
 
 const SendData = union(enum) {
     @"inline": []const u8,
-    out_of_line: OsIpcSharedMemory,
+    out_of_line: SharedMemory,
 
     pub fn new(data: []const u8) !SendData {
         if (data.len >= max_inline_size.load(.seq_cst)) {
             // Convert the data payload into a shared memory region to avoid exceeding
             // any message size limits.
-            return .{ .out_of_line = try OsIpcSharedMemory.fromBytes(data) };
+            return .{ .out_of_line = try SharedMemory.fromBytes(data) };
         } else {
             return .{ .@"inline" = data };
         }
     }
 };
 
-pub const OsIpcChannel = union(enum) {
-    sender: OsIpcSender,
-    receiver: OsIpcReceiver,
+pub const Channel = union(enum) {
+    sender: Sender,
+    receiver: Receiver,
 
-    pub fn deinit(self: *@This()) void {
-        switch (self.*) {
-            .sender => |*sd| sd.deinit(),
-            .receiver => |*rc| rc.deinit(),
+    pub fn deinit(self: @This()) void {
+        switch (self) {
+            .sender => |sd| sd.deinit(),
+            .receiver => |rc| rc.deinit(),
         }
     }
 };
 
-pub const OsOpaqueIpcChannel = struct {
+pub const OpaqueChannel = struct {
     port: Port,
     right: mach.mach_port_right_t,
 
-    pub fn deinit(self: *OsOpaqueIpcChannel) void {
+    pub fn deinit(self: OpaqueChannel) void {
         self.port.release(self.right) catch |e| std.debug.panic("release({}): {}", .{ self.port.name, e });
-        self.* = undefined;
     }
 
-    pub fn asSender(self: OsOpaqueIpcChannel) error{WrongType}!OsIpcSender {
+    pub fn asSender(self: OpaqueChannel) error{WrongType}!Sender {
         if (self.right != .send) return error.WrongType;
         return .{ .port = self.port };
     }
 
-    pub fn asReceiver(self: OsOpaqueIpcChannel) error{WrongType}!OsIpcReceiver {
+    pub fn asReceiver(self: OpaqueChannel) error{WrongType}!Receiver {
         if (self.right != .recv) return error.WrongType;
         return .{ .port = self.port };
     }
 };
 
-pub const OsIpcReceiverSet = struct {
+pub const ReceiverSet = struct {
     port: Port,
     ports: std.ArrayListUnmanaged(Port),
 
@@ -432,50 +430,40 @@ pub const OsIpcReceiverSet = struct {
     }
 
     /// The set takes ownership of `receiver`.
-    pub fn add(self: *@This(), alloc: std.mem.Allocator, receiver: OsIpcReceiver) !OsIpcReceiverSetPortId {
+    pub fn add(self: *@This(), alloc: std.mem.Allocator, receiver: Receiver) !ReceiverId {
         try receiver.port.moveMember(self.port);
         try self.ports.append(alloc, receiver.port);
-        return .{ .id = @intCast(receiver.port.name) };
+        return .{ .id = receiver.port.name };
     }
 
-    pub fn select(self: *@This()) !OsIpcSelectionResult {
-        return (OsIpcReceiver{ .port = self.port }).select(.blocking);
+    pub fn select(self: *@This(), alloc: std.mem.Allocator) !SelectionResult {
+        return (Receiver{ .port = self.port }).select(alloc, .blocking);
     }
 };
 
-const BlockingMode = union(enum) {
-    blocking,
-    nonblocking,
-    /// Measured in milliseconds.
-    timeout: c_uint,
-};
-
-pub const OsIpcReceiverSetPortId = struct { id: u64 };
-
-pub const OsIpcSelectionResult = struct {
-    id: OsIpcReceiverSetPortId,
-    event: union(enum) {
-        closed,
-        received: IpcMessage,
-    },
-};
+pub const ReceiverId = struct { id: std.c.mach_port_t };
 
 pub const OneShotServer = struct {
-    receiver: OsIpcReceiver,
+    receiver: Receiver,
     name: NameBuf,
     registration_port: Port,
 
     pub const name_fmt = "org.rust-lang.ipc-channel.{}";
 
     const NameBuf = struct {
+        // TODO: rename to `data`
         buf: [std.fmt.count(name_fmt, .{std.math.minInt(i64)}):0]u8,
         len: usize,
 
         pub const init: @This() = .{ .buf = undefined, .len = 0 };
+
+        pub fn span(self: *const @This()) [:0]const u8 {
+            return self.buf[0..self.len :0];
+        }
     };
 
     pub fn new() !OneShotServer {
-        var receiver = try OsIpcReceiver.new();
+        var receiver = try Receiver.new();
         errdefer receiver.deinit();
 
         const bootstrap_port = try mach.getSpecialPort(.bootstrap);
@@ -504,7 +492,7 @@ pub const OneShotServer = struct {
     pub fn deinit(self: *OneShotServer) void {
         const bootstrap_port = mach.getSpecialPort(.bootstrap) catch |e| std.debug.panic("task_get_special_port: {}", .{e});
 
-        bootstrap.register2(bootstrap_port, self.getName(), .null, 0) catch |e| switch (e) {
+        bootstrap.register2(bootstrap_port, self.name.span(), .null, 0) catch |e| switch (e) {
             error.AlreadyExists => {
                 // The Rust version of ipc_channel silently ignores this error.
                 // TODO: check whether this call has the desired effect regardless of the error. If yes, document it, if no, figure out what the correct method for unregistration is.
@@ -516,12 +504,8 @@ pub const OneShotServer = struct {
         self.* = undefined;
     }
 
-    pub fn getName(self: *const @This()) [:0]const u8 {
-        return self.name.buf[0..self.name.len :0];
-    }
-
     /// On success, leaves `self` deinitialized.
-    pub fn accept(self: *@This(), alloc: std.mem.Allocator) !struct { rc: OsIpcReceiver, msg: IpcMessage } {
+    pub fn accept(self: *@This(), alloc: std.mem.Allocator) !struct { rc: Receiver, msg: IpcMessage } {
         const msg = try self.receiver.recv(alloc);
         const rc = self.receiver;
         self.deinit();
@@ -529,15 +513,15 @@ pub const OneShotServer = struct {
     }
 };
 
-pub const OsIpcSharedMemory = struct {
+pub const SharedMemory = struct {
     data: []u8,
 
-    pub fn deinit(self: *@This()) void {
+    pub fn deinit(self: @This()) void {
         const rt: mach.kern_return_t = @enumFromInt(std.c.vm_deallocate(mach.mach_task_self(), @intFromPtr(self.data.ptr), self.data.len));
         mach.checkKernelReturn(rt) catch |e| std.debug.panic("vm_deallocate: {}", .{e});
     }
 
-    pub fn clone(self: *@This()) !OsIpcSharedMemory {
+    pub fn clone(self: *@This()) !SharedMemory {
         var address: [*]u8 = undefined;
         const rt = mach.vm_remap(
             mach.mach_task_self(),
@@ -556,13 +540,13 @@ pub const OsIpcSharedMemory = struct {
         return .{ .data = address[0..self.data.len] };
     }
 
-    pub fn fromByte(byte: u8, length: usize) !OsIpcSharedMemory {
+    pub fn fromByte(byte: u8, length: usize) !SharedMemory {
         const address = try mach.vmAllocate(length);
         @memset(address, byte);
         return address;
     }
 
-    pub fn fromBytes(bytes: []const u8) !OsIpcSharedMemory {
+    pub fn fromBytes(bytes: []const u8) !SharedMemory {
         const buf = try mach.vmAllocate(bytes.len);
         @memcpy(buf, bytes);
         return .{ .data = buf };
