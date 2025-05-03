@@ -71,6 +71,7 @@ pub const FreeMessageFlags = packed struct(u32) {
     free_channels: bool,
     /// Whether to free the shared memory regions array. This will not free the contents.
     free_shared_memory_regions: bool,
+    pad: u29 = 0,
 };
 
 pub export fn ipc_channel_free_message(
@@ -86,4 +87,5 @@ pub export fn ipc_channel_free_message(
     if (flags.free_shared_memory_regions) {
         alloc.free(message.shared_memory_regions.slice());
     }
+    return 0;
 }
