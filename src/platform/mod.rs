@@ -12,6 +12,7 @@
     target_os = "openbsd",
     target_os = "freebsd",
     target_os = "illumos",
+    all(windows, feature = "unix-on-wine"),
     rust_analyzer
 ))]
 mod unix;
@@ -20,6 +21,7 @@ mod unix;
     target_os = "openbsd",
     target_os = "freebsd",
     target_os = "illumos",
+    all(windows, feature = "unix-on-wine"),
 ))]
 mod os {
     pub use super::unix::*;
@@ -36,16 +38,19 @@ mod os {
     pub use MachError as OsError;
 }
 
-#[cfg(any(target_os = "windows", rust_analyzer))]
+#[cfg(any(
+    all(target_os = "windows", not(feature = "unix-on-wine")),
+    rust_analyzer
+))]
 mod windows;
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(feature = "unix-on-wine")))]
 mod os {
     pub use super::windows::*;
 
     pub use WinIpcError as OsError;
 }
 
-pub use self::os::{
+pub use os::{
     OsError, OsIpcChannel, OsIpcOneShotServer, OsIpcReceiver, OsIpcReceiverSet,
     OsIpcSelectionResult, OsIpcSender, OsIpcSharedMemory, OsOpaqueIpcChannel, channel,
 };

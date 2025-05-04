@@ -8,6 +8,7 @@
 // except according to those terms.
 
 #![doc = include_str!("../README.md")]
+#![feature(maybe_uninit_slice)]
 
 pub mod error;
 pub mod ipc;

@@ -140,13 +140,14 @@ impl From<OsError> for TryRecvError {
             target_os = "openbsd",
             target_os = "freebsd",
             target_os = "illumos",
+            all(windows, feature = "unix-on-wine"),
         ))]
         {
             if matches!(value, OsError::Empty) {
                 return Self::Empty;
             }
         }
-        #[cfg(windows)]
+        #[cfg(all(windows, not(feature = "unix-on-wine")))]
         {
             if matches!(value, OsError::NoData) {
                 return Self::Empty;
