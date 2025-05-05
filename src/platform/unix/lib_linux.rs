@@ -1,3 +1,5 @@
+#![allow(non_camel_case_types)]
+
 use std::ffi::{CStr, c_int, c_uchar, c_uint, c_void};
 use std::io;
 use std::mem::{self, MaybeUninit};
