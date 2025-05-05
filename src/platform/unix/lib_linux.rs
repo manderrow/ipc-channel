@@ -279,6 +279,7 @@ fn validate_fd(rc: usize, name: &str) -> fd_t {
     }
 }
 
+#[track_caller]
 pub fn epoll_create1(flags: u32) -> Result<fd_t, io::Error> {
     let rc = unsafe { linux_syscall_epoll_create1(flags) };
     check_error(rc)?;
@@ -325,6 +326,7 @@ pub unsafe fn munmap(addr: NonNull<u8>, len: usize) -> Result<(), io::Error> {
     Ok(())
 }
 
+#[track_caller]
 pub fn memfd_create(name: &CStr, flags: u32) -> Result<fd_t, io::Error> {
     let rc = unsafe { linux_syscall_memfd_create(name.as_ptr() as *const u8, flags) };
     check_error(rc)?;
@@ -381,6 +383,7 @@ pub fn poll(fds: &mut [pollfd], timeout: i32) -> Result<usize, io::Error> {
     Ok(rc)
 }
 
+#[track_caller]
 pub unsafe fn accept(
     socket: fd_t,
     address: Option<NonNull<sockaddr>>,
@@ -449,6 +452,7 @@ pub fn listen(socket: fd_t, backlog: u32) -> Result<(), io::Error> {
     Ok(())
 }
 
+#[track_caller]
 pub fn socket(domain: u32, ty: u32, protocol: u32) -> Result<fd_t, io::Error> {
     let rc = unsafe { linux_syscall_socket(domain, ty, protocol) };
     check_error(rc)?;
@@ -469,6 +473,7 @@ pub fn close(fd: fd_t) -> Result<(), io::Error> {
     Ok(())
 }
 
+#[track_caller]
 pub fn dup(fd: fd_t) -> Result<fd_t, io::Error> {
     let rc = unsafe { linux_syscall_dup(fd) };
     check_error(rc)?;
