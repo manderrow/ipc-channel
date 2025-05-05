@@ -913,14 +913,7 @@ fn recv(fd: c_int, blocking_mode: BlockingMode) -> Result<IpcMessage, UnixError>
                 len: main_data_buffer.capacity(),
             },
         ];
-        let mut cmsg = UnixCmsg {
-            hdr: cmsghdr {
-                len: 0,
-                level: 0,
-                r#type: 0,
-            },
-            body: [MaybeUninit::uninit(); UnixCmsg::LEN],
-        };
+        let mut cmsg = MaybeUninit::<UnixCmsg>::uninit();
         let mut msg = new_msghdr(
             &mut iovec,
             NonNull::from(&mut cmsg).cast().as_ptr(),
@@ -931,22 +924,23 @@ fn recv(fd: c_int, blocking_mode: BlockingMode) -> Result<IpcMessage, UnixError>
         main_data_buffer.set_len(bytes_read - mem::size_of_val(&total_size));
 
         let cmsg_length = msg.controllen;
-        let fd_count = if cmsg_length == 0 {
-            0
-        } else {
+        if cmsg_length != 0 {
+            let cmsg = cmsg.assume_init_ref();
+
             // The control header is followed by an array of FDs. The size of the control header is
             // determined by CMSG_SPACE. (On Linux this would the same as CMSG_ALIGN, but that isn't
             // exposed by libc. CMSG_SPACE(0) is the portable version of that.)
-            (cmsg.hdr.len - mem::size_of::<cmsghdr>()) / mem::size_of::<fd_t>()
-        };
-        let cmsg_fds =
-            NonNull::slice_from_raw_parts(NonNull::from(&cmsg.body).cast::<fd_t>(), fd_count)
-                .as_ref();
-        for &fd in cmsg_fds {
-            if is_socket(fd) {
-                channels.push(OsOpaqueIpcChannel::from_fd(fd));
-            } else {
-                shared_memory_regions.push(OsIpcSharedMemory::from_fd(fd)?);
+            let fd_count = (cmsg.hdr.len - mem::size_of::<cmsghdr>()) / mem::size_of::<fd_t>();
+
+            let cmsg_fds =
+                NonNull::slice_from_raw_parts(NonNull::from(&cmsg.body).cast::<fd_t>(), fd_count)
+                    .as_ref();
+            for &fd in cmsg_fds {
+                if is_socket(fd) {
+                    channels.push(OsOpaqueIpcChannel::from_fd(fd));
+                } else {
+                    shared_memory_regions.push(OsIpcSharedMemory::from_fd(fd)?);
+                }
             }
         }
     }
