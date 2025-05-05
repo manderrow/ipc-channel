@@ -1240,7 +1240,8 @@ impl<S> CustomSerializerTrait for CustomSerializer<S> {
         );
         self.channels
             .push(OsIpcChannel::Receiver(receiver.consume()));
-        i.try_into().unwrap()
+        i.try_into()
+            .expect("channels len should never overflow u32")
     }
 
     fn serialize_sender(&mut self, sender: &OsIpcSender) -> u32 {
@@ -1251,7 +1252,8 @@ impl<S> CustomSerializerTrait for CustomSerializer<S> {
             "Invalid call to serialize_channel"
         );
         self.channels.push(OsIpcChannel::Sender(sender.clone()));
-        i.try_into().unwrap()
+        i.try_into()
+            .expect("channels len should never overflow u32")
     }
 
     fn serialize_shared_memory_region(&mut self, shared_memory_region: &OsIpcSharedMemory) -> u32 {
@@ -1263,7 +1265,8 @@ impl<S> CustomSerializerTrait for CustomSerializer<S> {
         );
         self.shared_memory_regions
             .push(shared_memory_region.clone());
-        i.try_into().unwrap()
+        i.try_into()
+            .expect("shared_memory_regions len should never overflow u32")
     }
 }
 

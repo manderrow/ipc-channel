@@ -266,10 +266,23 @@ unsafe extern "C" {
     pub fn linux_syscall_getpid() -> pid_t;
 }
 
+#[track_caller]
+fn validate_fd(rc: usize, name: &str) -> fd_t {
+    match rc.try_into() {
+        Ok(fd) => fd,
+        Err(_) => panic!(
+            "at {}, {} should return a valid fd: {}",
+            std::panic::Location::caller(),
+            name,
+            rc
+        ),
+    }
+}
+
 pub fn epoll_create1(flags: u32) -> Result<fd_t, io::Error> {
     let rc = unsafe { linux_syscall_epoll_create1(flags) };
     check_error(rc)?;
-    Ok(rc.try_into().unwrap())
+    Ok(validate_fd(rc, "epoll_create1"))
 }
 pub fn epoll_wait(
     epfd: fd_t,
@@ -315,7 +328,7 @@ pub unsafe fn munmap(addr: NonNull<u8>, len: usize) -> Result<(), io::Error> {
 pub fn memfd_create(name: &CStr, flags: u32) -> Result<fd_t, io::Error> {
     let rc = unsafe { linux_syscall_memfd_create(name.as_ptr() as *const u8, flags) };
     check_error(rc)?;
-    Ok(rc.try_into().unwrap())
+    Ok(validate_fd(rc, "memfd_create"))
 }
 
 pub fn send(socket: fd_t, buf: &[u8], flags: u32) -> Result<usize, io::Error> {
@@ -375,7 +388,7 @@ pub unsafe fn accept(
 ) -> Result<fd_t, io::Error> {
     let rc = unsafe { linux_syscall_accept(socket, address, address_len) };
     check_error(rc)?;
-    Ok(rc.try_into().unwrap())
+    Ok(validate_fd(rc, "accept"))
 }
 
 pub unsafe fn bind(
@@ -439,7 +452,7 @@ pub fn listen(socket: fd_t, backlog: u32) -> Result<(), io::Error> {
 pub fn socket(domain: u32, ty: u32, protocol: u32) -> Result<fd_t, io::Error> {
     let rc = unsafe { linux_syscall_socket(domain, ty, protocol) };
     check_error(rc)?;
-    Ok(rc.try_into().unwrap())
+    Ok(validate_fd(rc, "socket"))
 }
 
 pub fn fstat(fd: fd_t, buf: &mut MaybeUninit<stat>) -> Result<(), io::Error> {
@@ -459,7 +472,7 @@ pub fn close(fd: fd_t) -> Result<(), io::Error> {
 pub fn dup(fd: fd_t) -> Result<fd_t, io::Error> {
     let rc = unsafe { linux_syscall_dup(fd) };
     check_error(rc)?;
-    Ok(rc.try_into().unwrap())
+    Ok(validate_fd(rc, "dup"))
 }
 
 pub fn getpid() -> pid_t {
