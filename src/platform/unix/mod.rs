@@ -11,7 +11,7 @@ use std::cell::Cell;
 use std::cmp;
 use std::convert::TryInto;
 use std::error::Error as StdError;
-use std::ffi::{CString, OsStr, c_uint};
+use std::ffi::{CString, OsStr};
 use std::ffi::{c_int, c_void};
 use std::fmt::{self, Debug, Formatter};
 use std::io;
