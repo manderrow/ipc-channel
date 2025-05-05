@@ -1387,7 +1387,7 @@ impl OsIpcSender {
             }
         }
 
-        let oob_size = if oob.needs_to_be_sent() {
+        let mut oob_size = if oob.needs_to_be_sent() {
             rkyv::util::with_arena(|arena| {
                 let mut counter = crate::util::CountingWriter::default();
                 rkyv::api::serialize_using::<_, rkyv::rancor::Error>(
@@ -1423,6 +1423,21 @@ impl OsIpcSender {
                 oob.big_data_receiver_handle =
                     Some((raw_receiver_handle.take_raw().0 as _, data.len() as u64));
                 oob.target_process_id = server_pid;
+
+                // need to recompute the size now
+                oob_size = rkyv::util::with_arena(|arena| {
+                    let mut counter = crate::util::CountingWriter::default();
+                    rkyv::api::serialize_using::<_, rkyv::rancor::Error>(
+                        &oob,
+                        &mut rkyv::ser::Serializer::new(
+                            &mut counter,
+                            arena.acquire(),
+                            rkyv::ser::sharing::Share::new(),
+                        ),
+                    )
+                    .unwrap();
+                    counter.len
+                });
 
                 Some(sender)
             } else {
