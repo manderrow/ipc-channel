@@ -35,7 +35,7 @@ use tempfile::{Builder, TempDir};
 use crate::ipc::IpcMessage;
 
 mod lib_linux;
-use lib_linux as libc;
+use lib_linux::{self as libc, CMSG_ALIGN};
 
 const MAX_FDS_IN_CMSG: usize = 64;
 
@@ -70,7 +70,7 @@ const RECVMSG_FLAGS: u32 = libc::MSG_CMSG_CLOEXEC;
 )))]
 const RECVMSG_FLAGS: u32 = 0;
 
-fn new_sockaddr_un(path: &OsStr) -> (sockaddr_un, usize) {
+fn new_sockaddr_un(path: &OsStr) -> (sockaddr_un, socklen_t) {
     let mut sockaddr: sockaddr_un = unsafe { mem::zeroed() };
     let path = path.as_encoded_bytes();
     assert!(
@@ -80,7 +80,7 @@ fn new_sockaddr_un(path: &OsStr) -> (sockaddr_un, usize) {
     sockaddr.sun_path[0..path.len()].copy_from_slice(path);
     sockaddr.sun_path[path.len()] = 0;
     sockaddr.sun_family = libc::AF_UNIX as sa_family_t;
-    (sockaddr, mem::size_of::<sockaddr_un>())
+    (sockaddr, mem::size_of::<sockaddr_un>().try_into().unwrap())
 }
 
 /// Maximum size of the kernel buffer used for transfers over this channel.
@@ -293,8 +293,8 @@ impl OsIpcSender {
                     },
                 ];
 
-                let msghdr = new_msghdr(&mut iovec, cmsg_buffer, cmsg_space as usize);
-                let result = sendmsg(sender_fd, &msghdr, 0);
+                let msg = new_msghdr(&mut iovec, cmsg_buffer, cmsg_space);
+                let result = sendmsg(sender_fd, &msg, 0);
                 std::alloc::dealloc(cmsg_buffer as *mut u8, layout);
                 result
             };
@@ -417,11 +417,7 @@ impl OsIpcSender {
         unsafe {
             let fd = libc::socket(libc::AF_UNIX, SOCK_SEQPACKET | SOCK_FLAGS, 0)?;
             let (sockaddr, len) = new_sockaddr_un(OsStr::new(&name));
-            libc::connect(
-                fd,
-                &sockaddr as *const _ as *const sockaddr,
-                len as socklen_t,
-            )?;
+            libc::connect(fd, &sockaddr as *const _ as *const sockaddr, len)?;
 
             Ok(OsIpcSender::from_fd(fd))
         }
@@ -615,11 +611,7 @@ impl OsIpcOneShotServer {
             let socket_path = temp_dir.path().join("socket");
 
             let (sockaddr, len) = new_sockaddr_un(socket_path.as_os_str());
-            libc::bind(
-                fd,
-                &sockaddr as *const _ as *const sockaddr,
-                len as socklen_t,
-            )?;
+            libc::bind(fd, &sockaddr as *const _ as *const sockaddr, len)?;
 
             libc::listen(fd, 10)?;
 
@@ -925,23 +917,31 @@ fn recv(fd: c_int, blocking_mode: BlockingMode) -> Result<IpcMessage, UnixError>
             },
         ];
         let mut cmsg = UnixCmsg {
-            cmsg_buffer: [MaybeUninit::uninit(); UnixCmsg::LEN],
-            msghdr: new_msghdr(&mut iovec, std::ptr::null_mut(), UnixCmsg::LEN),
+            hdr: cmsghdr {
+                len: 0,
+                level: 0,
+                r#type: 0,
+            },
+            body: [MaybeUninit::uninit(); UnixCmsg::LEN],
         };
-        cmsg.msghdr.control = (&mut cmsg.cmsg_buffer).as_mut_ptr().cast();
+        let mut msg = new_msghdr(
+            &mut iovec,
+            NonNull::from(&mut cmsg.hdr).cast().as_ptr(),
+            UnixCmsg::SPACE,
+        );
 
-        let bytes_read = cmsg.recv(fd, blocking_mode)?;
+        let bytes_read = recvmsg_wrapped(fd, &mut msg, blocking_mode)?;
         main_data_buffer.set_len(bytes_read - mem::size_of_val(&total_size));
 
         let cmsg_fds = CMSG_DATA(cmsg.cmsg_buffer()) as *const c_int;
-        let cmsg_length = cmsg.msghdr.controllen;
+        let cmsg_length = msg.controllen;
         let channel_length = if cmsg_length == 0 {
             0
         } else {
             // The control header is followed by an array of FDs. The size of the control header is
             // determined by CMSG_SPACE. (On Linux this would the same as CMSG_ALIGN, but that isn't
             // exposed by libc. CMSG_SPACE(0) is the portable version of that.)
-            (cmsg.cmsg_len() - CMSG_SPACE(0) as size_t) / mem::size_of::<c_int>()
+            (cmsg.hdr.len - CMSG_SPACE(0) as size_t) / mem::size_of::<c_int>()
         };
         for index in 0..channel_length {
             let fd = *cmsg_fds.add(index);
@@ -1021,65 +1021,62 @@ fn create_shmem(name: CString, length: usize) -> io::Result<c_int> {
     Ok(fd)
 }
 
-#[repr(align(8))]
+#[repr(C, align(8))]
 struct UnixCmsg {
-    cmsg_buffer: [MaybeUninit<u8>; Self::LEN],
-    msghdr: msghdr,
+    hdr: cmsghdr,
+    body: [MaybeUninit<u8>; Self::LEN],
 }
 
 unsafe impl Send for UnixCmsg {}
 
 impl UnixCmsg {
-    const LEN: usize = CMSG_SPACE(MAX_FDS_IN_CMSG * mem::size_of::<c_int>());
+    const LEN: usize = CMSG_ALIGN(MAX_FDS_IN_CMSG * mem::size_of::<c_int>());
+    const SPACE: usize = CMSG_SPACE(MAX_FDS_IN_CMSG * mem::size_of::<c_int>());
 
     fn cmsg_buffer(&mut self) -> *mut cmsghdr {
-        self.cmsg_buffer.as_mut_ptr().cast()
+        &mut self.hdr
+    }
+}
+
+unsafe fn recvmsg_wrapped(
+    fd: c_int,
+    msg: &mut msghdr,
+    blocking_mode: BlockingMode,
+) -> Result<usize, UnixError> {
+    match blocking_mode {
+        BlockingMode::Nonblocking => {
+            libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK.try_into().unwrap())?;
+        },
+        BlockingMode::Timeout(duration) => {
+            let events = libc::POLLIN | libc::POLLPRI | libc::POLLRDHUP;
+
+            let n = libc::poll(
+                &mut [libc::pollfd {
+                    fd,
+                    events,
+                    revents: 0,
+                }],
+                duration.as_millis().try_into().unwrap_or(-1),
+            )?;
+
+            if n == 0 {
+                return Err(UnixError::Empty);
+            }
+        },
+        BlockingMode::Blocking => {},
     }
 
-    unsafe fn recv(&mut self, fd: c_int, blocking_mode: BlockingMode) -> Result<usize, UnixError> {
-        match blocking_mode {
-            BlockingMode::Nonblocking => {
-                libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK.try_into().unwrap())?;
-            },
-            BlockingMode::Timeout(duration) => {
-                let events = libc::POLLIN | libc::POLLPRI | libc::POLLRDHUP;
+    let n = recvmsg(fd, unsafe { std::mem::transmute(msg) }, RECVMSG_FLAGS)?;
 
-                let n = libc::poll(
-                    &mut [libc::pollfd {
-                        fd,
-                        events,
-                        revents: 0,
-                    }],
-                    duration.as_millis().try_into().unwrap_or(-1),
-                )?;
-
-                if n == 0 {
-                    return Err(UnixError::Empty);
-                }
-            },
-            BlockingMode::Blocking => {},
-        }
-
-        let n = recvmsg(
-            fd,
-            unsafe { std::mem::transmute(&mut self.msghdr) },
-            RECVMSG_FLAGS,
-        )?;
-
-        if n == 0 {
-            return Err(UnixError::ChannelClosed);
-        }
-
-        if let BlockingMode::Nonblocking = blocking_mode {
-            libc::fcntl(fd, libc::F_SETFL, 0)?;
-        }
-
-        Ok(n)
+    if n == 0 {
+        return Err(UnixError::ChannelClosed);
     }
 
-    unsafe fn cmsg_len(&self) -> size_t {
-        unsafe { (*(self.msghdr.control as *const cmsghdr)).len as size_t }
+    if let BlockingMode::Nonblocking = blocking_mode {
+        libc::fcntl(fd, libc::F_SETFL, 0)?;
     }
+
+    Ok(n)
 }
 
 fn is_socket(fd: c_int) -> bool {

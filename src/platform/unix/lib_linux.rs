@@ -93,7 +93,7 @@ pub struct sockaddr_un {
     pub sun_path: [u8; 108],
 }
 
-const fn CMSG_ALIGN(len: usize) -> usize {
+pub const fn CMSG_ALIGN(len: usize) -> usize {
     len + mem::size_of::<usize>() - 1 & !(mem::size_of::<usize>() - 1)
 }
 
