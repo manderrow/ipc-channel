@@ -54,7 +54,7 @@ const RECVMSG_FLAGS: u32 = libc::MSG_CMSG_CLOEXEC;
 #[cfg(not(any(target_os = "linux", target_os = "illumos")))]
 const RECVMSG_FLAGS: u32 = 0;
 
-unsafe fn new_sockaddr_un(path: &OsStr) -> (sockaddr_un, usize) {
+fn new_sockaddr_un(path: &OsStr) -> (sockaddr_un, usize) {
     let mut sockaddr: sockaddr_un = unsafe { mem::zeroed() };
     let path = path.as_encoded_bytes();
     assert!(
@@ -81,6 +81,7 @@ static SYSTEM_SENDBUF_SIZE: LazyLock<usize> = LazyLock::new(|| {
             .as_mut()
     })
     .expect("Failed to obtain maximum send size for socket");
+    libc::close(sock).expect("Failed to close socket");
     assert_eq!(len, size_of::<c_int>() as u32);
     socket_sendbuf_size
         .try_into()
@@ -96,12 +97,6 @@ static SHM_COUNT: AtomicUsize = AtomicUsize::new(0);
 pub fn channel() -> Result<(OsIpcSender, OsIpcReceiver), UnixError> {
     let [sd, rc] = libc::socketpair(libc::AF_UNIX, SOCK_SEQPACKET | SOCK_FLAGS, 0)?;
     Ok((OsIpcSender::from_fd(sd), OsIpcReceiver::from_fd(rc)))
-}
-
-#[derive(Clone, Copy)]
-struct PollEntry {
-    pub id: u64,
-    pub fd: fd_t,
 }
 
 #[derive(PartialEq, Debug)]
