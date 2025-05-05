@@ -18,6 +18,7 @@ use std::io;
 use std::marker::PhantomData;
 use std::mem::{self, ManuallyDrop, MaybeUninit};
 use std::ops::Deref;
+use std::path::Path;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -30,7 +31,7 @@ use libc::{
 use libc::{S_IFMT, S_IFSOCK, SO_LINGER, getsockopt};
 use libc::{iovec, msghdr, off_t, recvmsg, sendmsg};
 use libc::{sa_family_t, size_t, sockaddr, sockaddr_un, socklen_t};
-use tempfile::{Builder, TempDir};
+use rand::Rng;
 
 use crate::ipc::IpcMessage;
 
@@ -586,43 +587,72 @@ impl OsOpaqueIpcChannel {
 }
 
 pub struct OsIpcOneShotServer {
-    fd: c_int,
+    fd: fd_t,
 
-    // Object representing the temporary directory the socket was created in.
-    // The directory is automatically deleted (along with the socket inside it)
-    // when this field is dropped.
-    _temp_dir: TempDir,
+    name: CString,
 }
 
 impl Drop for OsIpcOneShotServer {
     fn drop(&mut self) {
+        // close the socket and then delete the leftover socket file
         libc::close(self.fd).unwrap();
+        libc::unlink(&self.name).unwrap();
     }
 }
 
 impl OsIpcOneShotServer {
     pub fn new() -> Result<(OsIpcOneShotServer, String), UnixError> {
-        unsafe {
-            let fd = libc::socket(libc::AF_UNIX, SOCK_SEQPACKET | SOCK_FLAGS, 0)?;
-            let temp_dir = Builder::new().tempdir()?;
-            let socket_path = temp_dir.path().join("socket");
-
-            let (sockaddr, len) = new_sockaddr_un(socket_path.as_os_str());
-            libc::bind(fd, &sockaddr as *const _ as *const sockaddr, len)?;
-
-            libc::listen(fd, 10)?;
-
-            Ok((
-                OsIpcOneShotServer {
-                    fd,
-                    _temp_dir: temp_dir,
-                },
-                socket_path
-                    .to_str()
-                    .ok_or_else(|| UnixError::Io(io::Error::other("Invalid temp path")))?
-                    .to_owned(),
-            ))
+        let fd = libc::socket(libc::AF_UNIX, SOCK_SEQPACKET | SOCK_FLAGS, 0)?;
+        let mut name = String::from_utf8(libc::temp_dir()?).map_err(|e| {
+            UnixError::Io(io::Error::other(format!(
+                "Invalid UTF-8 in temp_dir path: {}",
+                e
+            )))
+        })?;
+        // can't use std::path because we may be compiled for Windows.
+        if !name.starts_with("/") {
+            return Err(UnixError::Io(io::Error::other(format!(
+                "temp_dir path is not absolute: {:?}",
+                name
+            ))));
         }
+        if name.contains('\0') {
+            return Err(UnixError::Io(io::Error::other(format!(
+                "temp_dir path contains an interior NUL byte: {:?}",
+                name
+            ))));
+        }
+        const PREFIX: &str = "/socket-";
+        const RAND_LEN: usize = 6;
+        name.reserve(PREFIX.len() + RAND_LEN);
+        name.push_str(PREFIX);
+        let base_len = name.len();
+        for _ in 0..65536 {
+            let mut rng = rand::rng();
+            for _ in 0..RAND_LEN {
+                name.push(rng.sample(rand::distr::Alphanumeric) as char);
+            }
+
+            if Path::new(&name).try_exists()? {
+                // truncate and try again
+                name.truncate(base_len);
+            } else {
+                break;
+            }
+        }
+
+        let (sockaddr, len) = new_sockaddr_un(OsStr::new(&name));
+        unsafe { libc::bind(fd, &sockaddr as *const _ as *const sockaddr, len)? };
+
+        libc::listen(fd, 10)?;
+
+        Ok((
+            OsIpcOneShotServer {
+                fd,
+                name: CString::new(&*name).expect("We have already checked this"),
+            },
+            name,
+        ))
     }
 
     #[allow(clippy::type_complexity)]

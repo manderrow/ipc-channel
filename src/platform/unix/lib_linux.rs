@@ -266,6 +266,11 @@ unsafe extern "C" {
     pub fn linux_syscall_dup(fd: fd_t) -> usize;
 
     pub fn linux_syscall_getpid() -> pid_t;
+
+    /// `path` must be non-null.
+    pub fn linux_syscall_unlink(path: *const u8) -> usize;
+
+    pub fn linux_helper_temp_dir(buf: iovec) -> usize;
 }
 
 #[track_caller]
@@ -482,6 +487,25 @@ pub fn dup(fd: fd_t) -> Result<fd_t, io::Error> {
     Ok(validate_fd(rc, "dup"))
 }
 
+pub fn unlink(path: &CStr) -> Result<(), io::Error> {
+    let rc = unsafe { linux_syscall_unlink(path.as_ptr().cast::<u8>()) };
+    check_error(rc)?;
+    Ok(())
+}
+
 pub fn getpid() -> pid_t {
     unsafe { linux_syscall_getpid() }
+}
+
+pub fn temp_dir() -> Result<Vec<u8>, io::Error> {
+    let mut buf = Vec::with_capacity(4096);
+    let rc = unsafe {
+        linux_helper_temp_dir(iovec {
+            base: NonNull::from(buf.spare_capacity_mut()).cast(),
+            len: buf.capacity(),
+        })
+    };
+    check_error(rc)?;
+    unsafe { buf.set_len(rc) };
+    Ok(buf)
 }

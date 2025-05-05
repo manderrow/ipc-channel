@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 
 //const signed: isize = @bitCast(rc);
@@ -123,6 +124,45 @@ pub export fn linux_syscall_dup(fd: std.os.linux.fd_t) usize {
     return std.os.linux.dup(fd);
 }
 
+pub export fn linux_syscall_unlink(path: [*:0]const u8) usize {
+    return std.os.linux.unlink(path);
+}
+
 pub export fn linux_syscall_getpid() std.os.linux.pid_t {
     return std.os.linux.getpid();
+}
+
+fn errToRc(e: std.os.linux.E) usize {
+    return @bitCast(@as(isize, -@as(i32, @intFromEnum(e))));
+}
+
+/// On success, returns the length. On failure, returns an error using the same encoding as syscalls.
+pub export fn linux_helper_temp_dir(buf_vec: std.posix.iovec) usize {
+    const buf = buf_vec.base[0..buf_vec.len];
+    switch (builtin.os.tag) {
+        .windows => {
+            if (std.process.getenvW(std.unicode.utf8ToUtf16LeStringLiteral("TMPDIR"))) |path| {
+                const len = std.unicode.calcWtf8Len(path);
+                if (len > buf.len) {
+                    return errToRc(.NAMETOOLONG);
+                }
+                return std.unicode.wtf16LeToWtf8(buf[0..len], path);
+            }
+        },
+        else => {
+            if (std.posix.getenv("TMPDIR")) |path| {
+                if (path.len > buf.len) {
+                    return errToRc(.NAMETOOLONG);
+                }
+                @memcpy(buf[0..path.len], path);
+                return path.len;
+            }
+        },
+    }
+    const path = if (builtin.abi.isAndroid()) "/data/local/tmp" else "/tmp";
+    if (path.len > buf.len) {
+        return errToRc(.NAMETOOLONG);
+    }
+    @memcpy(buf[0..path.len], path);
+    return path.len;
 }
