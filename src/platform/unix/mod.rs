@@ -489,9 +489,6 @@ impl OsIpcReceiverSet {
         // Poll until we receive at least one event.
         assert_eq!(self.events.len(), 0);
         let events = self.events.spare_capacity_mut();
-        for event in &mut *events {
-            *event = MaybeUninit::zeroed();
-        }
         let n = loop {
             match libc::epoll_wait(self.epoll, events, -1) {
                 Ok(0) => {},
