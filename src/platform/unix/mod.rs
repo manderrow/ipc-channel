@@ -923,14 +923,14 @@ fn recv(fd: c_int, blocking_mode: BlockingMode) -> Result<IpcMessage, UnixError>
         };
         let mut msg = new_msghdr(
             &mut iovec,
-            NonNull::from(&mut cmsg.hdr).cast().as_ptr(),
-            UnixCmsg::SPACE,
+            NonNull::from(&mut cmsg).cast().as_ptr(),
+            size_of::<UnixCmsg>(),
         );
 
         let bytes_read = recvmsg_wrapped(fd, &mut msg, blocking_mode)?;
         main_data_buffer.set_len(bytes_read - mem::size_of_val(&total_size));
 
-        let cmsg_fds = CMSG_DATA(cmsg.cmsg_buffer()) as *const c_int;
+        let cmsg_fds = cmsg.body.as_ptr() as *const c_int;
         let cmsg_length = msg.controllen;
         let channel_length = if cmsg_length == 0 {
             0
@@ -1028,11 +1028,6 @@ unsafe impl Send for UnixCmsg {}
 
 impl UnixCmsg {
     const LEN: usize = CMSG_ALIGN(MAX_FDS_IN_CMSG * mem::size_of::<c_int>());
-    const SPACE: usize = CMSG_SPACE(MAX_FDS_IN_CMSG * mem::size_of::<c_int>());
-
-    fn cmsg_buffer(&mut self) -> *mut cmsghdr {
-        &mut self.hdr
-    }
 }
 
 unsafe fn recvmsg_wrapped(
