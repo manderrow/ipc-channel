@@ -1146,7 +1146,6 @@ pub enum MachError {
 }
 
 impl MachError {
-    #[allow(dead_code)]
     pub fn channel_is_closed(&self) -> bool {
         *self == MachError::NotifyNoSenders
     }

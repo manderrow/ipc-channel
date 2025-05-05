@@ -850,11 +850,6 @@ pub enum UnixError {
 }
 
 impl UnixError {
-    fn last() -> UnixError {
-        UnixError::from(io::Error::last_os_error())
-    }
-
-    #[allow(dead_code)]
     pub fn channel_is_closed(&self) -> bool {
         matches!(self, UnixError::ChannelClosed)
     }
