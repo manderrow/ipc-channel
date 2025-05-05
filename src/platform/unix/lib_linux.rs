@@ -111,15 +111,15 @@ pub const fn CMSG_LEN(length: c_uint) -> c_uint {
 
 #[repr(C)]
 pub struct cmsghdr {
-    pub cmsg_len: size_t,
-    pub cmsg_level: c_int,
-    pub cmsg_type: c_int,
+    pub len: size_t,
+    pub level: c_int,
+    pub r#type: c_int,
 }
 
 #[repr(C)]
 pub struct iovec {
-    pub iov_base: NonNull<u8>,
-    pub iov_len: usize,
+    pub base: NonNull<u8>,
+    pub len: usize,
 }
 
 #[repr(C)]
@@ -130,13 +130,13 @@ pub struct linger {
 
 #[repr(C)]
 pub struct msghdr {
-    pub msg_name: *mut c_void,
-    pub msg_namelen: socklen_t,
-    pub msg_iov: *mut iovec,
-    pub msg_iovlen: size_t,
-    pub msg_control: *mut c_void,
-    pub msg_controllen: size_t,
-    pub msg_flags: c_int,
+    pub name: *mut c_void,
+    pub namelen: socklen_t,
+    pub iov: *mut iovec,
+    pub iovlen: usize,
+    pub control: *mut c_void,
+    pub controllen: usize,
+    pub flags: i32,
 }
 
 #[repr(C)]

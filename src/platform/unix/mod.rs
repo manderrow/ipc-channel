@@ -261,9 +261,11 @@ impl OsIpcSender {
                     if cmsg_buffer.is_null() {
                         std::alloc::handle_alloc_error(layout);
                     }
-                    (*cmsg_buffer).cmsg_len = CMSG_LEN(cmsg_length) as usize;
-                    (*cmsg_buffer).cmsg_level = libc::SOL_SOCKET;
-                    (*cmsg_buffer).cmsg_type = libc::SCM_RIGHTS;
+                    *cmsg_buffer = cmsghdr {
+                        len: CMSG_LEN(cmsg_length) as usize,
+                        level: libc::SOL_SOCKET,
+                        r#type: libc::SCM_RIGHTS,
+                    };
 
                     ptr::copy_nonoverlapping(
                         fds.as_ptr(),
@@ -282,12 +284,12 @@ impl OsIpcSender {
                     // whether it already got the entire message,
                     // or needs to receive additional fragments -- and if so, how much.
                     iovec {
-                        iov_base: NonNull::from(&len).cast(),
-                        iov_len: mem::size_of_val(&len),
+                        base: NonNull::from(&len).cast(),
+                        len: mem::size_of_val(&len),
                     },
                     iovec {
-                        iov_base: NonNull::from(data_buffer).cast(),
-                        iov_len: data_buffer.len(),
+                        base: NonNull::from(data_buffer).cast(),
+                        len: data_buffer.len(),
                     },
                 ];
 
@@ -919,25 +921,25 @@ fn recv(fd: c_int, blocking_mode: BlockingMode) -> Result<IpcMessage, UnixError>
 
         let mut iovec = [
             iovec {
-                iov_base: NonNull::from(&mut total_size).cast(),
-                iov_len: mem::size_of_val(&total_size),
+                base: NonNull::from(&mut total_size).cast(),
+                len: mem::size_of_val(&total_size),
             },
             iovec {
-                iov_base: NonNull::from(main_data_buffer.as_mut_slice()).cast(),
-                iov_len: main_data_buffer.capacity(),
+                base: NonNull::from(main_data_buffer.as_mut_slice()).cast(),
+                len: main_data_buffer.capacity(),
             },
         ];
         let mut cmsg = UnixCmsg {
             cmsg_buffer: [MaybeUninit::uninit(); UnixCmsg::LEN],
             msghdr: new_msghdr(&mut iovec, std::ptr::null_mut(), UnixCmsg::LEN),
         };
-        cmsg.msghdr.msg_control = (&mut cmsg.cmsg_buffer).as_mut_ptr().cast();
+        cmsg.msghdr.control = (&mut cmsg.cmsg_buffer).as_mut_ptr().cast();
 
         let bytes_read = cmsg.recv(fd, blocking_mode)?;
         main_data_buffer.set_len(bytes_read - mem::size_of_val(&total_size));
 
         let cmsg_fds = CMSG_DATA(cmsg.cmsg_buffer()) as *const c_int;
-        let cmsg_length = cmsg.msghdr.msg_controllen;
+        let cmsg_length = cmsg.msghdr.controllen;
         let channel_length = if cmsg_length == 0 {
             0
         } else {
@@ -1007,15 +1009,15 @@ fn recv(fd: c_int, blocking_mode: BlockingMode) -> Result<IpcMessage, UnixError>
 
 // https://github.com/servo/ipc-channel/issues/192
 fn new_msghdr(iovec: &mut [iovec], cmsg_buffer: *mut cmsghdr, cmsg_space: usize) -> msghdr {
-    let mut msghdr: msghdr = unsafe { mem::zeroed() };
-    msghdr.msg_name = ptr::null_mut();
-    msghdr.msg_namelen = 0;
-    msghdr.msg_iov = iovec.as_mut_ptr();
-    msghdr.msg_iovlen = iovec.len();
-    msghdr.msg_control = cmsg_buffer as *mut c_void;
-    msghdr.msg_controllen = cmsg_space;
-    msghdr.msg_flags = 0;
-    msghdr
+    msghdr {
+        name: ptr::null_mut(),
+        namelen: 0,
+        iov: iovec.as_mut_ptr(),
+        iovlen: iovec.len(),
+        control: cmsg_buffer as *mut c_void,
+        controllen: cmsg_space,
+        flags: 0,
+    }
 }
 
 fn create_shmem(name: CString, length: usize) -> io::Result<c_int> {
@@ -1081,7 +1083,7 @@ impl UnixCmsg {
     }
 
     unsafe fn cmsg_len(&self) -> size_t {
-        unsafe { (*(self.msghdr.msg_control as *const cmsghdr)).cmsg_len as size_t }
+        unsafe { (*(self.msghdr.control as *const cmsghdr)).len as size_t }
     }
 }
 
