@@ -44,14 +44,30 @@ const MAX_FDS_IN_CMSG: u32 = 64;
 // Empirically, we have to deduct 32 bytes from that.
 const RESERVED_SIZE: usize = 32;
 
-#[cfg(any(target_os = "linux", target_os = "illumos"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "illumos",
+    all(target_os = "windows", feature = "unix-on-wine")
+))]
 const SOCK_FLAGS: u32 = libc::SOCK_CLOEXEC;
-#[cfg(not(any(target_os = "linux", target_os = "illumos")))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "illumos",
+    all(target_os = "windows", feature = "unix-on-wine")
+)))]
 const SOCK_FLAGS: u32 = 0;
 
-#[cfg(any(target_os = "linux", target_os = "illumos"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "illumos",
+    all(target_os = "windows", feature = "unix-on-wine")
+))]
 const RECVMSG_FLAGS: u32 = libc::MSG_CMSG_CLOEXEC;
-#[cfg(not(any(target_os = "linux", target_os = "illumos")))]
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "illumos",
+    all(target_os = "windows", feature = "unix-on-wine")
+)))]
 const RECVMSG_FLAGS: u32 = 0;
 
 fn new_sockaddr_un(path: &OsStr) -> (sockaddr_un, usize) {
