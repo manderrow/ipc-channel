@@ -101,17 +101,17 @@ pub unsafe fn CMSG_DATA(cmsg: *const cmsghdr) -> *mut c_uchar {
     unsafe { cmsg.offset(1) as *mut c_uchar }
 }
 
-pub const fn CMSG_SPACE(length: c_uint) -> c_uint {
-    (CMSG_ALIGN(length as usize) + CMSG_ALIGN(mem::size_of::<cmsghdr>())) as c_uint
+pub const fn CMSG_SPACE(length: usize) -> usize {
+    CMSG_ALIGN(length) + CMSG_ALIGN(mem::size_of::<cmsghdr>())
 }
 
-pub const fn CMSG_LEN(length: c_uint) -> c_uint {
-    CMSG_ALIGN(mem::size_of::<cmsghdr>()) as c_uint + length
+pub const fn CMSG_LEN(length: usize) -> usize {
+    CMSG_ALIGN(mem::size_of::<cmsghdr>()) + length
 }
 
 #[repr(C)]
 pub struct cmsghdr {
-    pub len: size_t,
+    pub len: usize,
     pub level: c_int,
     pub r#type: c_int,
 }

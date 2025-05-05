@@ -37,7 +37,7 @@ use crate::ipc::IpcMessage;
 mod lib_linux;
 use lib_linux as libc;
 
-const MAX_FDS_IN_CMSG: u32 = 64;
+const MAX_FDS_IN_CMSG: usize = 64;
 
 // The value Linux returns for SO_SNDBUF
 // is not the size we are actually allowed to use...
@@ -250,9 +250,9 @@ impl OsIpcSender {
             len: usize,
         ) -> Result<(), UnixError> {
             let result = unsafe {
-                let cmsg_length = mem::size_of_val(fds) as c_uint;
+                let cmsg_length = mem::size_of_val(fds);
                 let layout = std::alloc::Layout::from_size_align(
-                    CMSG_SPACE(cmsg_length) as usize,
+                    CMSG_SPACE(cmsg_length),
                     std::mem::align_of::<cmsghdr>(),
                 )
                 .unwrap();
@@ -262,7 +262,7 @@ impl OsIpcSender {
                         std::alloc::handle_alloc_error(layout);
                     }
                     *cmsg_buffer = cmsghdr {
-                        len: CMSG_LEN(cmsg_length) as usize,
+                        len: CMSG_LEN(cmsg_length),
                         level: libc::SOL_SOCKET,
                         r#type: libc::SCM_RIGHTS,
                     };
@@ -1035,7 +1035,7 @@ struct UnixCmsg {
 unsafe impl Send for UnixCmsg {}
 
 impl UnixCmsg {
-    const LEN: usize = CMSG_SPACE(MAX_FDS_IN_CMSG * (mem::size_of::<c_int>() as c_uint)) as usize;
+    const LEN: usize = CMSG_SPACE(MAX_FDS_IN_CMSG * mem::size_of::<c_int>());
 
     fn cmsg_buffer(&mut self) -> *mut cmsghdr {
         self.cmsg_buffer.as_mut_ptr().cast()
