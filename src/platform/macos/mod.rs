@@ -432,7 +432,7 @@ impl OsIpcSender {
         }
     }
 
-    pub fn connect(name: String) -> Result<OsIpcSender, MachError> {
+    pub fn connect(name: &str) -> Result<OsIpcSender, MachError> {
         unsafe {
             let mut bootstrap_port = 0;
             let os_result = mach_sys::task_get_special_port(

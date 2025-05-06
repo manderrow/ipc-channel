@@ -16,12 +16,14 @@ use std::{
     marker::{PhantomData, Send, Sync},
     mem::{self, ManuallyDrop},
     ops::{Deref, DerefMut, RangeFrom},
-    ptr, slice,
+    ptr::{self, NonNull},
+    slice,
     sync::LazyLock,
     thread,
     time::Duration,
 };
 
+use rkyv::util::AlignedVec;
 use uuid::Uuid;
 use windows::{
     Win32::{
@@ -158,20 +160,19 @@ unsafe fn create_duplex(pipe_name: &CString) -> Result<HANDLE, WinError> {
 }
 
 struct MessageHeader {
-    data_len: u32,
     oob_len: u32,
+    data_len: u32,
 }
 
 impl MessageHeader {
     fn total_message_bytes_needed(&self) -> usize {
-        mem::size_of::<MessageHeader>() + self.data_len as usize + self.oob_len as usize
+        mem::size_of::<MessageHeader>() + self.oob_len as usize + self.data_len as usize
     }
 }
 
 struct Message<'data> {
-    data_len: usize,
-    oob_len: usize,
-    bytes: &'data [u8],
+    oob: &'data [u8],
+    data: &'data [u8],
 }
 
 impl<'data> Message<'data> {
@@ -180,35 +181,24 @@ impl<'data> Message<'data> {
             return None;
         }
 
-        unsafe {
-            let header = &(*(bytes.as_ptr() as *const MessageHeader));
-            if bytes.len() < header.total_message_bytes_needed() {
-                return None;
-            }
-
-            Some(Message {
-                data_len: header.data_len as usize,
-                oob_len: header.oob_len as usize,
-                bytes: &bytes[0..header.total_message_bytes_needed()],
-            })
+        let header = NonNull::from(bytes).cast::<MessageHeader>();
+        assert!(header.is_aligned());
+        let header = unsafe { header.as_ref() };
+        if bytes.len() < header.total_message_bytes_needed() {
+            return None;
         }
-    }
 
-    fn data(&self) -> &[u8] {
-        &self.bytes
-            [mem::size_of::<MessageHeader>()..(mem::size_of::<MessageHeader>() + self.data_len)]
-    }
-
-    fn oob_bytes(&self) -> &[u8] {
-        &self.bytes[(mem::size_of::<MessageHeader>() + self.data_len)..]
+        Some(Message {
+            oob: &bytes[mem::size_of::<MessageHeader>()..][..header.oob_len as usize],
+            data: &bytes[mem::size_of::<MessageHeader>() + header.oob_len as usize..]
+                [..header.data_len as usize],
+        })
     }
 
     fn oob_data(&self) -> Result<Option<&ArchivedOutOfBandMessage>, WinIpcError> {
-        if self.oob_len > 0 {
-            let oob = rkyv::access::<ArchivedOutOfBandMessage, rkyv::rancor::BoxedError>(
-                self.oob_bytes(),
-            )
-            .map_err(WinIpcError::OOBDataDecodeError)?;
+        if !self.oob.is_empty() {
+            let oob = rkyv::access::<ArchivedOutOfBandMessage, rkyv::rancor::BoxedError>(self.oob)
+                .map_err(WinIpcError::OOBDataDecodeError)?;
             Ok(Some(oob))
         } else {
             Ok(None)
@@ -216,7 +206,7 @@ impl<'data> Message<'data> {
     }
 
     fn size(&self) -> usize {
-        mem::size_of::<MessageHeader>() + self.data_len + self.oob_len
+        mem::size_of::<MessageHeader>() + self.oob.len() + self.data.len()
     }
 }
 
@@ -400,7 +390,7 @@ struct AsyncData {
     /// i.e. `capacity()` needs to be larger than `len()`.
     /// If part of the vector is already filled, that is left in place;
     /// the new data will only be written to the unused space.
-    buf: Vec<u8>,
+    buf: AlignedVec,
 }
 
 #[repr(transparent)]
@@ -464,7 +454,7 @@ struct MessageReader {
     /// thus making it inaccessible from safe code --
     /// see `async` below.
     /// We only move it back once the kernel signals completion of the async read.
-    read_buf: Vec<u8>,
+    read_buf: AlignedVec,
 
     /// Data used by the kernel during an async read operation.
     ///
@@ -519,7 +509,7 @@ impl MessageReader {
     fn new(handle: WinHandle) -> MessageReader {
         MessageReader {
             handle,
-            read_buf: Vec::new(),
+            read_buf: AlignedVec::new(),
             r#async: None,
             entry_id: None,
         }
@@ -865,7 +855,7 @@ impl MessageReader {
                 win32_trace!(
                     "[$ {:?}] msg with total {} bytes, {} channels, {} shmems, big data handle {:?}",
                     self.handle,
-                    message.data_len,
+                    message.data.len(),
                     oob.channel_handles.len(),
                     oob.shmem_handles.len(),
                     oob.big_data_receiver_handle
@@ -932,7 +922,7 @@ impl MessageReader {
                 unsafe { CloseHandle(target_process)? };
             }
 
-            let buf_data = big_data.unwrap_or_else(|| message.data().to_vec());
+            let buf_data = big_data.unwrap_or_else(|| message.data.to_vec());
 
             win32_trace!(
                 "[$ {:?}] get_message success -> {} bytes, {} channels, {} shmems",
@@ -956,7 +946,11 @@ impl MessageReader {
             if self.read_buf.len() == size {
                 self.read_buf.clear();
             } else {
-                self.read_buf.drain(0..size);
+                assert!(self.read_buf.len() > size);
+                // copy data to the beginning, overwriting the "removed" data
+                self.read_buf.copy_within(size.., 0);
+                // truncate the buffer by setting its length.
+                unsafe { self.read_buf.set_len(self.read_buf.len() - size) };
             }
         }
 
@@ -1017,7 +1011,9 @@ impl MessageReader {
             };
         }
 
-        Ok(std::mem::take(&mut self.read_buf))
+        let buf = self.read_buf.to_vec();
+        self.read_buf.clear();
+        Ok(buf)
     }
 
     /// Get raw handle of the receive port.
@@ -1265,8 +1261,8 @@ impl Clone for OsIpcSender {
 }
 
 impl OsIpcSender {
-    pub fn connect(name: String) -> Result<OsIpcSender, ConnectError> {
-        let pipe_name = make_pipe_name(&Uuid::parse_str(&name).map_err(ConnectError::UuidError)?);
+    pub fn connect(name: &str) -> Result<OsIpcSender, ConnectError> {
+        let pipe_name = make_pipe_name(&Uuid::parse_str(name).map_err(ConnectError::UuidError)?);
         OsIpcSender::connect_named(&pipe_name).map_err(ConnectError::WinError)
     }
 
@@ -1484,8 +1480,8 @@ impl OsIpcSender {
         }
 
         if big_data_sender.is_none() {
-            full_message.extend_from_slice(data);
             full_message.extend_from_slice(&oob_data);
+            full_message.extend_from_slice(data);
             assert!(full_message.len() == full_in_band_len);
 
             // Write needs to be atomic, since otherwise concurrent sending

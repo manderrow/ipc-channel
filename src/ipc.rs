@@ -272,7 +272,7 @@ where
     ///
     /// [IpcSender]: struct.IpcSender.html
     /// [IpcOneShotServer]: struct.IpcOneShotServer.html
-    pub fn connect(name: String) -> Result<IpcSender<T>, io::Error> {
+    pub fn connect(name: &str) -> Result<IpcSender<T>, io::Error> {
         Ok(IpcSender {
             os_sender: OsIpcSender::connect(name)?,
             phantom: PhantomData,
@@ -754,7 +754,7 @@ impl OpaqueIpcReceiver {
 /// use ipc_channel::ipc::{self, IpcOneShotServer, IpcSender, IpcReceiver};
 ///
 /// let (server, server_name) = IpcOneShotServer::new().unwrap();
-/// let tx: IpcSender<Vec<u8>> = IpcSender::connect(server_name).unwrap();
+/// let tx: IpcSender<Vec<u8>> = IpcSender::connect(&server_name).unwrap();
 ///
 /// tx.send(&vec![0x10, 0x11, 0x12, 0x13]).unwrap();
 /// let (_, data): (_, Vec<u8>) = server.accept().unwrap();
@@ -767,7 +767,7 @@ impl OpaqueIpcReceiver {
 /// let (server, name) = IpcOneShotServer::new().unwrap();
 ///
 /// let (tx1, rx1): (IpcSender<Vec<u8>>, IpcReceiver<Vec<u8>>) = ipc::channel().unwrap();
-/// let tx0 = IpcSender::connect(name).unwrap();
+/// let tx0 = IpcSender::connect(&name).unwrap();
 /// tx0.send(&tx1).unwrap();
 ///
 /// let (_, tx1): (_, IpcSender<Vec<u8>>) = server.accept().unwrap();

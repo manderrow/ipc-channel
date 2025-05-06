@@ -189,10 +189,10 @@ fn cross_process_embedded_senders_spawn() {
     let server2_name = get_channel_name_arg("server2");
     if let (Some(server0_name), Some(server2_name)) = (server0_name, server2_name) {
         let (tx1, rx1): (IpcSender<Person>, IpcReceiver<Person>) = ipc::channel().unwrap();
-        let tx0 = IpcSender::connect(server0_name).unwrap();
+        let tx0 = IpcSender::connect(&server0_name).unwrap();
         tx0.send(&tx1).unwrap();
         rx1.recv().unwrap();
-        let tx2: IpcSender<Person> = IpcSender::connect(server2_name).unwrap();
+        let tx2: IpcSender<Person> = IpcSender::connect(&server2_name).unwrap();
         tx2.send(&person).unwrap();
 
         std::process::exit(0);
@@ -208,10 +208,10 @@ fn cross_process_embedded_senders_fork() {
     let child_pid = unsafe {
         fork(|| {
             let (tx1, rx1): (IpcSender<Person>, IpcReceiver<Person>) = ipc::channel().unwrap();
-            let tx0 = IpcSender::connect(server0_name).unwrap();
+            let tx0 = IpcSender::connect(&server0_name).unwrap();
             tx0.send(&tx1).unwrap();
             rx1.recv().unwrap();
-            let tx2: IpcSender<Person> = IpcSender::connect(server2_name).unwrap();
+            let tx2: IpcSender<Person> = IpcSender::connect(&server2_name).unwrap();
             tx2.send(&person).unwrap();
         })
     };

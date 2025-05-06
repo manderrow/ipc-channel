@@ -447,7 +447,7 @@ fn receiver_set_eintr() {
             let mut rx_set = OsIpcReceiverSet::new().unwrap();
             let rx_id = rx_set.add(rx0).unwrap();
             // Let the parent know we're ready
-            let tx1 = OsIpcSender::connect(name).unwrap();
+            let tx1 = OsIpcSender::connect(&name).unwrap();
             tx1.send(b" Ready! ", vec![OsIpcChannel::Sender(tx0)], vec![])
                 .unwrap();
             // Send the result of the select back to the parent
@@ -688,7 +688,7 @@ fn server_accept_first() {
 
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(30));
-        let tx = OsIpcSender::connect(name).unwrap();
+        let tx = OsIpcSender::connect(&name).unwrap();
         tx.send(data, vec![], vec![]).unwrap();
     });
 
@@ -702,7 +702,7 @@ fn server_connect_first() {
     let data: &[u8] = b"1234567";
 
     thread::spawn(move || {
-        let tx = OsIpcSender::connect(name).unwrap();
+        let tx = OsIpcSender::connect(&name).unwrap();
         tx.send(data, vec![], vec![]).unwrap();
     });
 
@@ -718,7 +718,7 @@ fn cross_process_spawn() {
 
     let channel_name = get_channel_name_arg("server");
     if let Some(channel_name) = channel_name {
-        let tx = OsIpcSender::connect(channel_name).unwrap();
+        let tx = OsIpcSender::connect(&channel_name).unwrap();
         tx.send(data, vec![], vec![]).unwrap();
 
         std::process::exit(0);
@@ -740,7 +740,7 @@ fn cross_process_fork() {
 
     let child_pid = unsafe {
         fork(|| {
-            let tx = OsIpcSender::connect(name).unwrap();
+            let tx = OsIpcSender::connect(&name).unwrap();
             tx.send(data, vec![], vec![]).unwrap();
         })
     };
@@ -754,7 +754,7 @@ fn cross_process_fork() {
 fn cross_process_sender_transfer_spawn() {
     let channel_name = get_channel_name_arg("server");
     if let Some(channel_name) = channel_name {
-        let super_tx = OsIpcSender::connect(channel_name).unwrap();
+        let super_tx = OsIpcSender::connect(&channel_name).unwrap();
         let (sub_tx, sub_rx) = platform::channel().unwrap();
         let data: &[u8] = b"foo";
         super_tx
@@ -789,7 +789,7 @@ fn cross_process_sender_transfer_fork() {
 
     let child_pid = unsafe {
         fork(|| {
-            let super_tx = OsIpcSender::connect(name).unwrap();
+            let super_tx = OsIpcSender::connect(&name).unwrap();
             let (sub_tx, sub_rx) = platform::channel().unwrap();
             let data: &[u8] = b"foo";
             super_tx
@@ -1101,7 +1101,7 @@ fn cross_process_two_step_transfer_spawn() {
     let channel_name = get_channel_name_arg("server");
     if let Some(channel_name) = channel_name {
         // connect by name to our other process
-        let super_tx = OsIpcSender::connect(channel_name).unwrap();
+        let super_tx = OsIpcSender::connect(&channel_name).unwrap();
 
         // create a channel for real communication between the two processes
         let (sub_tx, sub_rx) = platform::channel().unwrap();

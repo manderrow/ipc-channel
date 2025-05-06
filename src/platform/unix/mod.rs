@@ -414,7 +414,7 @@ impl OsIpcSender {
         Ok(())
     }
 
-    pub fn connect(name: String) -> Result<OsIpcSender, UnixError> {
+    pub fn connect(name: &str) -> Result<OsIpcSender, UnixError> {
         unsafe {
             let fd = libc::socket(libc::AF_UNIX, SOCK_SEQPACKET | SOCK_FLAGS, 0)?;
             let (sockaddr, len) = new_sockaddr_un(OsStr::new(&name));
