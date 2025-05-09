@@ -11,7 +11,7 @@ pub enum DecodeError {
 impl fmt::Display for DecodeError {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Self::Rkyv(ref err) => write!(fmt, "rkyv error: {}", err),
+            Self::Rkyv(ref err) => write!(fmt, "rkyv error: {err}"),
         }
     }
 }
@@ -41,9 +41,9 @@ pub enum RecvError {
 impl fmt::Display for RecvError {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Self::Rkyv(ref err) => write!(fmt, "rkyv error: {}", err),
-            Self::Io(ref err) => write!(fmt, "io error: {}", err),
-            Self::Os(ref err) => write!(fmt, "os error: {}", err),
+            Self::Rkyv(ref err) => write!(fmt, "rkyv error: {err}"),
+            Self::Io(ref err) => write!(fmt, "io error: {err}"),
+            Self::Os(ref err) => write!(fmt, "os error: {err}"),
             Self::Disconnected => write!(fmt, "disconnected"),
         }
     }
@@ -112,7 +112,7 @@ pub enum TryRecvError {
 impl fmt::Display for TryRecvError {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Self::Recv(ref err) => write!(fmt, "ipc error: {}", err),
+            Self::Recv(ref err) => write!(fmt, "ipc error: {err}"),
             Self::Empty => write!(fmt, "empty"),
         }
     }
@@ -168,9 +168,9 @@ pub enum SendError {
 impl fmt::Display for SendError {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Self::Rkyv(ref err) => write!(fmt, "rkyv error: {}", err),
-            Self::Io(ref err) => write!(fmt, "io error: {}", err),
-            Self::Os(ref err) => write!(fmt, "os error: {}", err),
+            Self::Rkyv(ref err) => write!(fmt, "rkyv error: {err}"),
+            Self::Io(ref err) => write!(fmt, "io error: {err}"),
+            Self::Os(ref err) => write!(fmt, "os error: {err}"),
             Self::Disconnected => write!(fmt, "disconnected"),
         }
     }

@@ -62,11 +62,11 @@ fn main() {
 
     if os == "windows" {
         std::fs::copy(
-            format!("{}/lib/linux.lib", prefix),
-            format!("{}/lib/liblinux.a", prefix),
+            format!("{prefix}/lib/linux.lib"),
+            format!("{prefix}/lib/liblinux.a"),
         )
         .unwrap();
     }
 
-    println!("cargo::rustc-link-search={}/lib", prefix);
+    println!("cargo::rustc-link-search={prefix}/lib");
 }

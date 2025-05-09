@@ -25,18 +25,18 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, UNIX_EPOCH};
 
 use libc::{
-    CMSG_DATA, CMSG_LEN, CMSG_SPACE, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE, SOCK_SEQPACKET,
-    SOL_SOCKET, cmsghdr, fd_t, linger,
+    MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE, SOCK_SEQPACKET, SOL_SOCKET, cmsghdr, fd_t,
+    linger,
 };
 use libc::{S_IFMT, S_IFSOCK, SO_LINGER, getsockopt};
 use libc::{iovec, msghdr, off_t, recvmsg, sendmsg};
-use libc::{sa_family_t, size_t, sockaddr, sockaddr_un, socklen_t};
+use libc::{sa_family_t, sockaddr, sockaddr_un, socklen_t};
 use rand::Rng;
 
 use crate::ipc::IpcMessage;
 
 mod lib_linux;
-use lib_linux::{self as libc, CMSG_ALIGN};
+use lib_linux::{self as libc, cmsg_data, cmsg_data_layout, cmsg_layout_unpadded};
 
 const MAX_FDS_IN_CMSG: usize = 64;
 
@@ -106,7 +106,7 @@ static SYSTEM_SENDBUF_SIZE: LazyLock<usize> = LazyLock::new(|| {
 });
 
 // The pid of the current process which is used to create unique IDs
-static PID: LazyLock<c_int> = LazyLock::new(|| libc::getpid());
+static PID: LazyLock<c_int> = LazyLock::new(libc::getpid);
 
 // A global count used to create unique IDs
 static SHM_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -245,37 +245,34 @@ impl OsIpcSender {
         // (i.e. the length of the data buffer passed in),
         // which in a fragmented send will be smaller than the total message length.
         fn send_first_fragment(
-            sender_fd: c_int,
-            fds: &[c_int],
+            sender_fd: fd_t,
+            fds: &[fd_t],
             data_buffer: &[u8],
             len: usize,
         ) -> Result<(), UnixError> {
             let result = unsafe {
                 let cmsg_length = mem::size_of_val(fds);
-                let layout = std::alloc::Layout::from_size_align(
-                    CMSG_SPACE(cmsg_length),
-                    std::mem::align_of::<cmsghdr>(),
-                )
-                .unwrap();
+                let unpadded_layout = cmsg_layout_unpadded(cmsg_length)
+                    .map_err(|e| UnixError::Io(io::Error::other(e)))?;
+                let layout = unpadded_layout.pad_to_align();
                 let (cmsg_buffer, cmsg_space) = if cmsg_length > 0 {
-                    let cmsg_buffer = std::alloc::alloc(layout) as *mut cmsghdr;
-                    if cmsg_buffer.is_null() {
+                    let Some(cmsg_buffer) =
+                        NonNull::new(std::alloc::alloc(layout).cast::<cmsghdr>())
+                    else {
                         std::alloc::handle_alloc_error(layout);
-                    }
-                    *cmsg_buffer = cmsghdr {
-                        len: CMSG_LEN(cmsg_length),
+                    };
+                    cmsg_buffer.write(cmsghdr {
+                        len: unpadded_layout.size(),
                         level: libc::SOL_SOCKET,
                         r#type: libc::SCM_RIGHTS,
-                    };
+                    });
 
-                    ptr::copy_nonoverlapping(
-                        fds.as_ptr(),
-                        CMSG_DATA(cmsg_buffer) as *mut c_int,
-                        fds.len(),
-                    );
-                    (cmsg_buffer, CMSG_SPACE(cmsg_length))
+                    NonNull::from(fds)
+                        .cast::<fd_t>()
+                        .copy_to_nonoverlapping(cmsg_data(cmsg_buffer).cast::<fd_t>(), fds.len());
+                    (Some(cmsg_buffer), layout.size())
                 } else {
-                    (ptr::null_mut(), 0)
+                    (None, 0)
                 };
 
                 let mut iovec = [
@@ -296,7 +293,9 @@ impl OsIpcSender {
 
                 let msg = new_msghdr(&mut iovec, cmsg_buffer, cmsg_space);
                 let result = sendmsg(sender_fd, &msg, 0);
-                std::alloc::dealloc(cmsg_buffer as *mut u8, layout);
+                if let Some(ptr) = cmsg_buffer {
+                    std::alloc::dealloc(ptr.cast::<u8>().as_ptr(), layout);
+                }
                 result
             };
 
@@ -481,7 +480,7 @@ impl OsIpcReceiverSet {
         self.fds.push(fd);
         assert_eq!(self.events.len(), 0);
         self.events.reserve(self.fds.len());
-        return Ok((fd as u32).into());
+        Ok((fd as u32).into())
     }
 
     pub fn select(&mut self) -> Result<Vec<OsIpcSelectionResult>, UnixError> {
@@ -605,21 +604,18 @@ impl OsIpcOneShotServer {
         let fd = libc::socket(libc::AF_UNIX, SOCK_SEQPACKET | SOCK_FLAGS, 0)?;
         let mut name = String::from_utf8(libc::temp_dir()?).map_err(|e| {
             UnixError::Io(io::Error::other(format!(
-                "Invalid UTF-8 in temp_dir path: {}",
-                e
+                "Invalid UTF-8 in temp_dir path: {e}"
             )))
         })?;
         // can't use std::path because we may be compiled for Windows.
         if !name.starts_with("/") {
             return Err(UnixError::Io(io::Error::other(format!(
-                "temp_dir path is not absolute: {:?}",
-                name
+                "temp_dir path is not absolute: {name:?}"
             ))));
         }
         if name.contains('\0') {
             return Err(UnixError::Io(io::Error::other(format!(
-                "temp_dir path contains an interior NUL byte: {:?}",
-                name
+                "temp_dir path contains an interior NUL byte: {name:?}"
             ))));
         }
         const PREFIX: &str = "/socket-";
@@ -741,14 +737,14 @@ impl BackingStore {
 
     pub unsafe fn map_file(
         &self,
-        length: Option<size_t>,
-    ) -> Result<(NonNull<u8>, size_t), io::Error> {
+        length: Option<usize>,
+    ) -> Result<(NonNull<u8>, usize), io::Error> {
         let length = match length {
             Some(length) => length,
             None => {
                 let mut st = mem::MaybeUninit::uninit();
                 libc::fstat(self.fd, &mut st)?;
-                unsafe { st.assume_init() }.st_size as size_t
+                unsafe { st.assume_init() }.st_size as usize
             },
         };
         if length == 0 {
@@ -757,7 +753,7 @@ impl BackingStore {
         }
         let address =
             unsafe { libc::mmap(None, length, PROT_READ | PROT_WRITE, MAP_SHARED, self.fd, 0) }?;
-        assert!(address.as_ptr() != MAP_FAILED);
+        assert_ne!(address.as_ptr(), MAP_FAILED);
         Ok((address, length))
     }
 }
@@ -819,6 +815,8 @@ impl Deref for OsIpcSharedMemory {
 }
 
 impl OsIpcSharedMemory {
+    /// See [`crate::ipc::IpcSharedMemory::deref_mut`].
+    #[allow(clippy::missing_safety_doc)]
     #[inline]
     pub unsafe fn deref_mut(&mut self) -> &mut [u8] {
         unsafe { NonNull::slice_from_raw_parts(self.ptr, self.length).as_mut() }
@@ -946,7 +944,7 @@ fn recv(fd: c_int, blocking_mode: BlockingMode) -> Result<IpcMessage, UnixError>
         let mut cmsg = MaybeUninit::<UnixCmsg>::uninit();
         let mut msg = new_msghdr(
             &mut iovec,
-            NonNull::from(&mut cmsg).cast().as_ptr(),
+            Some(NonNull::from(&mut cmsg).cast()),
             size_of::<UnixCmsg>(),
         );
 
@@ -1025,13 +1023,20 @@ fn recv(fd: c_int, blocking_mode: BlockingMode) -> Result<IpcMessage, UnixError>
 }
 
 // https://github.com/servo/ipc-channel/issues/192
-fn new_msghdr(iovec: &mut [iovec], cmsg_buffer: *mut cmsghdr, cmsg_space: usize) -> msghdr {
+fn new_msghdr(
+    iovec: &mut [iovec],
+    cmsg_buffer: Option<NonNull<cmsghdr>>,
+    cmsg_space: usize,
+) -> msghdr {
     msghdr {
         name: ptr::null_mut(),
         namelen: 0,
         iov: iovec.as_mut_ptr(),
         iovlen: iovec.len(),
-        control: cmsg_buffer as *mut c_void,
+        control: cmsg_buffer
+            .map(NonNull::as_ptr)
+            .unwrap_or(ptr::null_mut())
+            .cast::<c_void>(),
         controllen: cmsg_space,
         flags: 0,
     }
@@ -1052,7 +1057,10 @@ struct UnixCmsg {
 unsafe impl Send for UnixCmsg {}
 
 impl UnixCmsg {
-    const LEN: usize = CMSG_ALIGN(MAX_FDS_IN_CMSG * mem::size_of::<c_int>());
+    const LEN: usize = match cmsg_data_layout(MAX_FDS_IN_CMSG * mem::size_of::<c_int>()) {
+        Ok(layout) => layout.pad_to_align().size(),
+        Err(_) => panic!(),
+    };
 }
 
 unsafe fn recvmsg_wrapped(
@@ -1083,7 +1091,11 @@ unsafe fn recvmsg_wrapped(
         BlockingMode::Blocking => {},
     }
 
-    let n = recvmsg(fd, unsafe { std::mem::transmute(msg) }, RECVMSG_FLAGS)?;
+    let n = recvmsg(
+        fd,
+        unsafe { std::mem::transmute::<&mut libc::msghdr, &mut MaybeUninit<libc::msghdr>>(msg) },
+        RECVMSG_FLAGS,
+    )?;
 
     if n == 0 {
         return Err(UnixError::ChannelClosed);

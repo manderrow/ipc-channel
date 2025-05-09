@@ -1812,6 +1812,8 @@ impl Deref for OsIpcSharedMemory {
 }
 
 impl OsIpcSharedMemory {
+    /// See [`crate::ipc::IpcSharedMemory::deref_mut`].
+    #[allow(clippy::missing_safety_doc)]
     #[inline]
     pub unsafe fn deref_mut(&mut self) -> &mut [u8] {
         assert!(!self.view_handle.Value.is_null() && self.handle.is_valid());

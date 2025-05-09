@@ -1,7 +1,7 @@
 `ipc-channel` is an inter-process implementation of Rust channels (which were inspired by CSP[^CSP]).
 
 A Rust channel is a unidirectional, FIFO queue of messages which can be used to send messages between threads in a single operating system process.
-For an excellent introduction to Rust channels, see [Using Message Passing to Transfer Data Between Threads](https://doc.rust-lang.org/stable/book/ch16-02-message-passing.html) in the Rust reference. 
+For an excellent introduction to Rust channels, see [Using Message Passing to Transfer Data Between Threads](https://doc.rust-lang.org/stable/book/ch16-02-message-passing.html) in the Rust reference.
 
 `ipc-channel` extends Rust channels to support inter-process communication (IPC) in a single operating system instance. The `serde` library is used to serialize and deserialize messages sent over `ipc-channel`.
 
@@ -75,7 +75,7 @@ One-shot server names are implemented as a file system path (for Unix variants, 
 ## Related
 
 * [Rust channel](https://doc.rust-lang.org/std/sync/mpsc/index.html): MPSC (multi-producer, single-consumer) channels in the Rust standard library. The implementation
-consists of a single consumer wrapper of a port of Crossbeam channel.
+	consists of a single consumer wrapper of a port of Crossbeam channel.
 * [Crossbeam channel](https://github.com/crossbeam-rs/crossbeam/tree/master/crossbeam-channel): extends Rust channels to be more like their Go counterparts. Crossbeam channels are MPMC (multi-producer, multi-consumer)
 * [Channels](https://docs.rs/channels/latest/channels/): provides Sender and Receiver types for communicating with a channel-like API across generic IO streams.
 

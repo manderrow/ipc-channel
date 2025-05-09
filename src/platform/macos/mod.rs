@@ -942,6 +942,8 @@ impl DerefMut for OsIpcSharedMemory {
 }
 
 impl OsIpcSharedMemory {
+    /// See [`crate::ipc::IpcSharedMemory::deref_mut`].
+    #[allow(clippy::missing_safety_doc)]
     #[inline]
     pub unsafe fn deref_mut(&mut self) -> &mut [u8] {
         if self.ptr.is_null() && self.length > 0 {

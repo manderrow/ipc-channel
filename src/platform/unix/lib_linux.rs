@@ -1,6 +1,7 @@
 #![allow(non_camel_case_types)]
 
-use std::ffi::{CStr, c_int, c_uchar, c_uint, c_void};
+use std::alloc;
+use std::ffi::{CStr, c_int, c_void};
 use std::io;
 use std::mem::{self, MaybeUninit};
 use std::ptr::NonNull;
@@ -23,9 +24,6 @@ fn check_error(rc: usize) -> Result<(), io::Error> {
         Err(io::Error::from_raw_os_error(int))
     }
 }
-
-pub type size_t = usize;
-pub type ssize_t = isize;
 
 pub type mode_t = u32;
 pub type nfds_t = usize;
@@ -93,20 +91,40 @@ pub struct sockaddr_un {
     pub sun_path: [u8; 108],
 }
 
-pub const fn CMSG_ALIGN(len: usize) -> usize {
-    len + mem::size_of::<usize>() - 1 & !(mem::size_of::<usize>() - 1)
+pub unsafe fn cmsg_data(cmsg: NonNull<cmsghdr>) -> NonNull<u8> {
+    unsafe { cmsg.offset(1).cast() }
 }
 
-pub unsafe fn CMSG_DATA(cmsg: *const cmsghdr) -> *mut c_uchar {
-    unsafe { cmsg.offset(1) as *mut c_uchar }
+/// Returns the full layout and the offset of the data.
+pub const fn cmsg_layout_unpadded(len: usize) -> Result<alloc::Layout, alloc::LayoutError> {
+    let data = match cmsg_data_layout_unpadded(len) {
+        Ok(layout) => layout,
+        Err(e) => return Err(e),
+    };
+    let layout = match alloc::Layout::new::<cmsghdr>().extend(data) {
+        Ok((layout, offset)) => {
+            if offset != size_of::<cmsghdr>() {
+                panic!("offset mismatch");
+            }
+            layout
+        },
+        Err(e) => return Err(e),
+    };
+    Ok(layout)
 }
 
-pub const fn CMSG_SPACE(length: usize) -> usize {
-    CMSG_ALIGN(length) + CMSG_ALIGN(mem::size_of::<cmsghdr>())
+pub const fn cmsg_data_layout_unpadded(len: usize) -> Result<alloc::Layout, alloc::LayoutError> {
+    match alloc::Layout::array::<u8>(len) {
+        Ok(layout) => layout.align_to(mem::align_of::<cmsghdr>()),
+        Err(e) => Err(e),
+    }
 }
 
-pub const fn CMSG_LEN(length: usize) -> usize {
-    CMSG_ALIGN(mem::size_of::<cmsghdr>()) + length
+pub const fn cmsg_data_layout(len: usize) -> Result<alloc::Layout, alloc::LayoutError> {
+    match cmsg_data_layout_unpadded(len) {
+        Ok(layout) => Ok(layout.pad_to_align()),
+        Err(e) => Err(e),
+    }
 }
 
 #[repr(C)]

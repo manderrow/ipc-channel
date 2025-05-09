@@ -334,9 +334,7 @@ where
                 (ser.channels, ser.shared_memory_regions)
             };
 
-            Ok(self
-                .os_sender
-                .send(&*buf, channels, shared_memory_regions)?)
+            Ok(self.os_sender.send(&buf, channels, shared_memory_regions)?)
         })
     }
 
@@ -521,7 +519,7 @@ where
         }
         let os_shared_memory = deserializer
             .deserialize_shared_memory_region(self.0.to_native())
-            .map_err(|e| <D::Error as Source>::new(e))?;
+            .map_err(<D::Error as Source>::new)?;
         Ok(IpcSharedMemory {
             os_shared_memory: Some(os_shared_memory),
         })
@@ -604,12 +602,7 @@ impl Debug for IpcMessage {
     }
 }
 
-pub struct Context {
-    os_ipc_channels: Vec<OsOpaqueIpcChannel>,
-    os_ipc_shared_memory_regions: Vec<Option<OsIpcSharedMemory>>,
-}
-
-trait Decode: Sized {
+pub trait Decode: Sized {
     type Archived: Portable
         + for<'a> CheckBytes<HighValidator<'a, rkyv::rancor::BoxedError>>
         + Deserialize<Self, Strategy<CustomDeserializer<Pool>, rkyv::rancor::BoxedError>>;
@@ -624,7 +617,7 @@ where
     type Archived = T::Archived;
 }
 
-trait Encode
+pub trait Encode
 where
     Self: for<'a> rkyv::SerializeUnsized<
             rkyv::rancor::Strategy<
@@ -735,7 +728,7 @@ pub struct OpaqueIpcReceiver {
 }
 
 impl OpaqueIpcReceiver {
-    pub fn to<'de, T>(self) -> IpcReceiver<T> {
+    pub fn to<T>(self) -> IpcReceiver<T> {
         IpcReceiver {
             os_receiver: self.os_receiver,
             phantom: PhantomData,
@@ -970,7 +963,7 @@ where
     fn deserialize(&self, deserializer: &mut D) -> Result<IpcReceiver<T>, D::Error> {
         let channel = deserializer
             .deserialize_channel(self.0.to_native())
-            .map_err(|e| <D::Error as Source>::new(e))?;
+            .map_err(<D::Error as Source>::new)?;
         Ok(IpcReceiver {
             os_receiver: channel.into_receiver(),
             phantom: PhantomData,
@@ -1023,7 +1016,7 @@ where
     fn deserialize(&self, deserializer: &mut D) -> Result<IpcSender<T>, D::Error> {
         let channel = deserializer
             .deserialize_channel(self.0.to_native())
-            .map_err(|e| <D::Error as Source>::new(e))?;
+            .map_err(<D::Error as Source>::new)?;
         Ok(IpcSender {
             os_sender: channel.into_sender(),
             phantom: PhantomData,
@@ -1057,7 +1050,7 @@ trait CustomDeserializerTrait {
     ) -> Result<OsIpcSharedMemory, DeserializeSharedMemoryRegionError>;
 }
 
-struct CustomDeserializer<D> {
+pub struct CustomDeserializer<D> {
     deserializer: D,
     channels: Vec<OsOpaqueIpcChannel>,
     shared_memory_regions: Vec<Option<OsIpcSharedMemory>>,
@@ -1147,7 +1140,7 @@ trait CustomSerializerTrait {
 }
 
 #[derive(Debug, Default)]
-struct CountingCustomSerializer<S> {
+pub struct CountingCustomSerializer<S> {
     serializer: S,
     channels: u32,
     shared_memory_regions: u32,
@@ -1213,21 +1206,10 @@ impl<S: rkyv::ser::Sharing<E>, E> rkyv::ser::Sharing<E> for CountingCustomSerial
 }
 
 #[derive(Default)]
-struct CustomSerializer<S> {
+pub struct CustomSerializer<S> {
     serializer: S,
     channels: Vec<OsIpcChannel>,
     shared_memory_regions: Vec<OsIpcSharedMemory>,
-}
-
-impl<S> CustomSerializer<S> {
-    pub fn new(serializer: S) -> Self {
-        Self {
-            serializer,
-            // TODO: reuse buffers
-            channels: Vec::new(),
-            shared_memory_regions: Vec::new(),
-        }
-    }
 }
 
 impl<S> CustomSerializerTrait for CustomSerializer<S> {
