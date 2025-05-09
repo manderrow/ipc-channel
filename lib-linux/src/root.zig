@@ -64,11 +64,11 @@ pub export fn linux_syscall_ftruncate(fd: std.os.linux.fd_t, length: std.os.linu
     return std.os.linux.ftruncate(fd, length);
 }
 
-pub export fn linux_syscall_fcntl(fd: std.os.linux.fd_t, cmd: c_int, arg: usize) usize {
+pub export fn linux_syscall_fcntl(fd: std.os.linux.fd_t, cmd: i32, arg: usize) usize {
     return std.os.linux.fcntl(fd, cmd, arg);
 }
 
-pub export fn linux_syscall_poll(fds: [*]std.os.linux.pollfd, nfds: std.os.linux.nfds_t, timeout: c_int) usize {
+pub export fn linux_syscall_poll(fds: [*]std.os.linux.pollfd, nfds: std.os.linux.nfds_t, timeout: i32) usize {
     return std.os.linux.poll(fds, nfds, timeout);
 }
 

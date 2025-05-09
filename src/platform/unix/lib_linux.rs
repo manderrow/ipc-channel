@@ -168,42 +168,104 @@ pub struct msghdr {
 
 #[repr(C)]
 pub struct pollfd {
-    pub fd: c_int,
+    pub fd: fd_t,
     pub events: i16,
     pub revents: i16,
 }
 
+#[cfg(target_arch = "x86")]
+mod arch {
+    use super::*;
+
+    pub type nlink_t = u32;
+    pub type blksize_t = i32;
+    pub type time_t = i32;
+    pub type time_nsec_t = i32;
+
+    #[repr(C)]
+    pub struct stat {
+        pub dev: dev_t,
+        __dev_padding: u32,
+        __ino_truncated: u32,
+
+        pub mode: mode_t,
+        pub nlink: nlink_t,
+        pub uid: uid_t,
+        pub gid: gid_t,
+        pub rdev: dev_t,
+        __rdev_padding: u32,
+
+        pub size: off_t,
+        pub blksize: blksize_t,
+        pub blocks: blkcnt_t,
+
+        pub atime: timespec,
+        pub mtime: timespec,
+        pub ctime: timespec,
+
+        pub ino: ino_t,
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+mod arch {
+    use super::*;
+
+    pub type nlink_t = u64;
+    pub type blksize_t = i64;
+    pub type time_t = i64;
+    pub type time_nsec_t = i64;
+
+    #[repr(C)]
+    pub struct stat {
+        pub dev: dev_t,
+        pub ino: ino_t,
+        pub nlink: nlink_t,
+
+        pub mode: mode_t,
+        pub uid: uid_t,
+        pub gid: gid_t,
+        __pad0: u32,
+        pub rdev: dev_t,
+        pub size: off_t,
+        pub blksize: blksize_t,
+        pub blocks: blkcnt_t,
+
+        pub atime: timespec,
+        pub mtime: timespec,
+        pub ctime: timespec,
+        __unused: [i64; 3],
+    }
+}
+
 pub type dev_t = u64;
 pub type ino_t = u64;
-pub type nlink_t = u64;
+pub type nlink_t = arch::nlink_t;
 pub type uid_t = u32;
 pub type gid_t = u32;
 pub type off_t = i64;
-pub type blksize_t = i64;
+pub type blksize_t = arch::blksize_t;
 pub type blkcnt_t = i64;
-pub type time_t = i64;
+pub type time_t = arch::time_t;
+pub type time_nsec_t = arch::time_nsec_t;
 
 #[repr(C)]
-pub struct stat {
-    pub st_dev: dev_t,
-    pub st_ino: ino_t,
-    pub st_nlink: nlink_t,
-    pub st_mode: mode_t,
-    pub st_uid: uid_t,
-    pub st_gid: gid_t,
-    __pad0: c_int,
-    pub st_rdev: dev_t,
-    pub st_size: off_t,
-    pub st_blksize: blksize_t,
-    pub st_blocks: blkcnt_t,
-    pub st_atime: time_t,
-    pub st_atime_nsec: i64,
-    pub st_mtime: time_t,
-    pub st_mtime_nsec: i64,
-    pub st_ctime: time_t,
-    pub st_ctime_nsec: i64,
-    __unused: [i64; 3],
+pub struct kernel_timespec {
+    sec: i64,
+    nsec: i64,
 }
+
+#[cfg(not(target_arch = "riscv32"))]
+#[repr(C)]
+pub struct timespec {
+    sec: isize,
+    nsec: isize,
+}
+
+#[cfg(target_arch = "riscv32")]
+pub type timespec = kernel_timespec;
+
+pub type stat = arch::stat;
 
 #[link(name = "linux", kind = "static")]
 unsafe extern "C" {
@@ -236,7 +298,7 @@ unsafe extern "C" {
     pub fn linux_syscall_send(socket: fd_t, buf: *const u8, len: usize, flags: u32) -> usize;
     pub fn linux_syscall_recv(socket: fd_t, buf: *mut u8, len: usize, flags: u32) -> usize;
 
-    pub fn linux_syscall_sendmsg(fd: fd_t, msg: *const msghdr, flags: u32) -> usize;
+    pub fn linux_syscall_sendmsg(fd: fd_t, msg: &msghdr, flags: u32) -> usize;
     pub fn linux_syscall_recvmsg(fd: fd_t, msg: &mut MaybeUninit<msghdr>, flags: u32) -> usize;
 
     pub fn linux_syscall_socketpair(
@@ -246,7 +308,7 @@ unsafe extern "C" {
         socket_vector: &mut [fd_t; 2],
     ) -> usize;
 
-    pub fn linux_syscall_ftruncate(fd: fd_t, length: i64) -> usize;
+    pub fn linux_syscall_ftruncate(fd: fd_t, length: off_t) -> usize;
 
     pub fn linux_syscall_fcntl(fd: fd_t, cmd: i32, arg: usize) -> usize;
 
@@ -271,7 +333,7 @@ unsafe extern "C" {
         sockfd: fd_t,
         level: i32,
         optname: u32,
-        optval: *mut u8,
+        optval: NonNull<u8>,
         optlen: &mut socklen_t,
     ) -> usize;
     pub fn linux_syscall_setsockopt(
@@ -292,10 +354,10 @@ unsafe extern "C" {
 
     pub fn linux_syscall_dup(fd: fd_t) -> usize;
 
-    pub fn linux_syscall_getpid() -> pid_t;
-
     /// `path` must be non-null.
     pub fn linux_syscall_unlink(path: *const u8) -> usize;
+
+    pub fn linux_syscall_getpid() -> pid_t;
 
     pub fn linux_helper_temp_dir(buf: iovec) -> usize;
 }
@@ -458,7 +520,13 @@ pub fn getsockopt(
 ) -> Result<u32, io::Error> {
     let mut len_out = optval.len().try_into().map_err(io::Error::other)?;
     let rc = unsafe {
-        linux_syscall_getsockopt(sockfd, level, optname, optval.as_mut_ptr(), &mut len_out)
+        linux_syscall_getsockopt(
+            sockfd,
+            level,
+            optname,
+            NonNull::from(optval).cast::<u8>(),
+            &mut len_out,
+        )
     };
     check_error(rc)?;
     Ok(len_out)

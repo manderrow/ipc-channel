@@ -28,33 +28,41 @@ fn main() {
     let mut prefix = out_dir;
     prefix.push_str("/zig-out");
 
-    let status = std::process::Command::new("zig")
-        .args([
-            "build",
-            "--cache-dir",
-            &cache_dir,
-            "-p",
-            &prefix,
-            &format!("-Doptimize={}", if debug { "Debug" } else { "ReleaseSafe" }),
-            &format!(
-                "-Dtarget={arch}-{}{}{}",
-                match os {
-                    "darwin" => "macos",
-                    _ => os,
-                },
-                match abi {
-                    Some(_) => "-",
-                    None => "",
-                },
-                match os {
-                    "windows" => "gnu",
-                    _ => abi.unwrap_or(""),
-                }
-            ),
-        ])
-        .current_dir(root_dir.join("lib-linux"))
-        .status()
-        .unwrap();
+    let mut command = std::process::Command::new("zig");
+    command.current_dir(root_dir.join("lib-linux")).args([
+        "build",
+        "--cache-dir",
+        &cache_dir,
+        "-p",
+        &prefix,
+        &format!("-Doptimize={}", if debug { "Debug" } else { "ReleaseSafe" }),
+        &format!(
+            "-Dtarget={}-{}{}{}",
+            match arch {
+                "i386" | "i586" | "i686" => "x86",
+                _ => arch,
+            },
+            match os {
+                "darwin" => "macos",
+                _ => os,
+            },
+            match abi {
+                Some(_) => "-",
+                None => "",
+            },
+            match os {
+                "windows" => "gnu",
+                _ => abi.unwrap_or(""),
+            }
+        ),
+    ]);
+    match arch {
+        "i386" | "i586" | "i686" => {
+            command.arg(format!("-Dcpu={arch}"));
+        },
+        _ => {},
+    }
+    let status = command.status().unwrap();
     if !status.success() {
         panic!("{status}");
     }

@@ -743,7 +743,7 @@ impl BackingStore {
             None => {
                 let mut st = mem::MaybeUninit::uninit();
                 libc::fstat(self.fd, &mut st)?;
-                unsafe { st.assume_init() }.st_size as usize
+                unsafe { st.assume_init() }.size as usize
             },
         };
         if length == 0 {
@@ -1121,6 +1121,6 @@ fn is_socket(fd: c_int) -> bool {
         if libc::fstat(fd, &mut st).is_err() {
             return false;
         }
-        (st.assume_init().st_mode & libc::S_IFMT) == libc::S_IFSOCK
+        (st.assume_init().mode & libc::S_IFMT) == libc::S_IFSOCK
     }
 }
