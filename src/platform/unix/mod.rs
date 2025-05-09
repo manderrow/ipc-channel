@@ -28,6 +28,7 @@ use rand::Rng;
 
 use crate::ipc::IpcMessage;
 
+// FIXME: need to use libc on non-Linux or unix-on-wine platforms
 mod lib_linux;
 use lib_linux::{self as libc, cmsghdr, fd_t, iovec, msghdr, sockaddr, sockaddr_un};
 
