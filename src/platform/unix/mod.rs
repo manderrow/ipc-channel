@@ -24,19 +24,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, UNIX_EPOCH};
 
-use libc::{
-    MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE, SOCK_SEQPACKET, SOL_SOCKET, cmsghdr, fd_t,
-    linger,
-};
-use libc::{S_IFMT, S_IFSOCK, SO_LINGER, getsockopt};
-use libc::{iovec, msghdr, off_t, recvmsg, sendmsg};
-use libc::{sa_family_t, sockaddr, sockaddr_un, socklen_t};
 use rand::Rng;
 
 use crate::ipc::IpcMessage;
 
 mod lib_linux;
-use lib_linux::{self as libc, cmsg_data, cmsg_data_layout, cmsg_layout_unpadded};
+use lib_linux::{self as libc, cmsghdr, fd_t, iovec, msghdr, sockaddr, sockaddr_un};
 
 const MAX_FDS_IN_CMSG: usize = 64;
 
@@ -50,13 +43,13 @@ const RESERVED_SIZE: usize = 32;
     target_os = "illumos",
     all(target_os = "windows", feature = "unix-on-wine")
 ))]
-const SOCK_FLAGS: u32 = libc::SOCK_CLOEXEC;
+const SOCK_FLAGS: u32 = libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC;
 #[cfg(not(any(
     target_os = "linux",
     target_os = "illumos",
     all(target_os = "windows", feature = "unix-on-wine")
 )))]
-const SOCK_FLAGS: u32 = 0;
+const SOCK_FLAGS: u32 = libc::SOCK_SEQPACKET;
 
 #[cfg(any(
     target_os = "linux",
@@ -71,7 +64,7 @@ const RECVMSG_FLAGS: u32 = libc::MSG_CMSG_CLOEXEC;
 )))]
 const RECVMSG_FLAGS: u32 = 0;
 
-fn new_sockaddr_un(path: &OsStr) -> (sockaddr_un, socklen_t) {
+fn new_sockaddr_un(path: &OsStr) -> (sockaddr_un, libc::socklen_t) {
     let mut sockaddr: sockaddr_un = unsafe { mem::zeroed() };
     let path = path.as_encoded_bytes();
     assert!(
@@ -80,7 +73,7 @@ fn new_sockaddr_un(path: &OsStr) -> (sockaddr_un, socklen_t) {
     );
     sockaddr.sun_path[0..path.len()].copy_from_slice(path);
     sockaddr.sun_path[path.len()] = 0;
-    sockaddr.sun_family = libc::AF_UNIX as sa_family_t;
+    sockaddr.sun_family = libc::AF_UNIX as libc::sa_family_t;
     (sockaddr, mem::size_of::<sockaddr_un>().try_into().unwrap())
 }
 
@@ -89,10 +82,10 @@ fn new_sockaddr_un(path: &OsStr) -> (sockaddr_un, socklen_t) {
 /// Note: This is *not* the actual maximal packet size we are allowed to use...
 /// Some of it is reserved by the kernel for bookkeeping.
 static SYSTEM_SENDBUF_SIZE: LazyLock<usize> = LazyLock::new(|| {
-    let sock = libc::socket(libc::AF_UNIX, SOCK_SEQPACKET | SOCK_FLAGS, 0)
+    let sock = libc::socket(libc::AF_UNIX, SOCK_FLAGS, 0)
         .expect("Failed to obtain a socket for checking maximum send size");
     let mut socket_sendbuf_size: c_int = 0;
-    let len = getsockopt(sock, libc::SOL_SOCKET, libc::SO_SNDBUF, unsafe {
+    let len = libc::getsockopt(sock, libc::SOL_SOCKET, libc::SO_SNDBUF, unsafe {
         NonNull::from(&mut socket_sendbuf_size)
             .cast::<[u8; size_of::<c_int>()]>()
             .as_mut()
@@ -112,7 +105,7 @@ static PID: LazyLock<c_int> = LazyLock::new(libc::getpid);
 static SHM_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 pub fn channel() -> Result<(OsIpcSender, OsIpcReceiver), UnixError> {
-    let [sd, rc] = libc::socketpair(libc::AF_UNIX, SOCK_SEQPACKET | SOCK_FLAGS, 0)?;
+    let [sd, rc] = libc::socketpair(libc::AF_UNIX, SOCK_FLAGS, 0)?;
     Ok((OsIpcSender::from_fd(sd), OsIpcReceiver::from_fd(rc)))
 }
 
@@ -252,7 +245,7 @@ impl OsIpcSender {
         ) -> Result<(), UnixError> {
             let result = unsafe {
                 let cmsg_length = mem::size_of_val(fds);
-                let unpadded_layout = cmsg_layout_unpadded(cmsg_length)
+                let unpadded_layout = libc::cmsg_layout_unpadded(cmsg_length)
                     .map_err(|e| UnixError::Io(io::Error::other(e)))?;
                 let layout = unpadded_layout.pad_to_align();
                 let (cmsg_buffer, cmsg_space) = if cmsg_length > 0 {
@@ -267,9 +260,10 @@ impl OsIpcSender {
                         r#type: libc::SCM_RIGHTS,
                     });
 
-                    NonNull::from(fds)
-                        .cast::<fd_t>()
-                        .copy_to_nonoverlapping(cmsg_data(cmsg_buffer).cast::<fd_t>(), fds.len());
+                    NonNull::from(fds).cast::<fd_t>().copy_to_nonoverlapping(
+                        libc::cmsg_data(cmsg_buffer).cast::<fd_t>(),
+                        fds.len(),
+                    );
                     (Some(cmsg_buffer), layout.size())
                 } else {
                     (None, 0)
@@ -292,7 +286,7 @@ impl OsIpcSender {
                 ];
 
                 let msg = new_msghdr(&mut iovec, cmsg_buffer, cmsg_space);
-                let result = sendmsg(sender_fd, &msg, 0);
+                let result = libc::sendmsg(sender_fd, &msg, 0);
                 if let Some(ptr) = cmsg_buffer {
                     std::alloc::dealloc(ptr.cast::<u8>().as_ptr(), layout);
                 }
@@ -415,7 +409,7 @@ impl OsIpcSender {
 
     pub fn connect(name: &str) -> Result<OsIpcSender, UnixError> {
         unsafe {
-            let fd = libc::socket(libc::AF_UNIX, SOCK_SEQPACKET | SOCK_FLAGS, 0)?;
+            let fd = libc::socket(libc::AF_UNIX, SOCK_FLAGS, 0)?;
             let (sockaddr, len) = new_sockaddr_un(OsStr::new(&name));
             libc::connect(fd, &sockaddr as *const _ as *const sockaddr, len)?;
 
@@ -601,7 +595,7 @@ impl Drop for OsIpcOneShotServer {
 
 impl OsIpcOneShotServer {
     pub fn new() -> Result<(OsIpcOneShotServer, String), UnixError> {
-        let fd = libc::socket(libc::AF_UNIX, SOCK_SEQPACKET | SOCK_FLAGS, 0)?;
+        let fd = libc::socket(libc::AF_UNIX, SOCK_FLAGS, 0)?;
         let mut name = String::from_utf8(libc::temp_dir()?).map_err(|e| {
             UnixError::Io(io::Error::other(format!(
                 "Invalid UTF-8 in temp_dir path: {e}"
@@ -669,12 +663,14 @@ impl OsIpcOneShotServer {
 //
 // See, for example, https://github.com/servo/ipc-channel/issues/29
 fn make_socket_lingering(sockfd: c_int) -> Result<(), UnixError> {
-    let linger = linger {
+    let linger = libc::linger {
         l_onoff: 1,
         l_linger: 30,
     };
-    let r = libc::setsockopt(sockfd, SOL_SOCKET, SO_LINGER, unsafe {
-        std::slice::from_raw_parts(&linger as *const _ as *const u8, mem::size_of::<linger>())
+    let r = libc::setsockopt(sockfd, libc::SOL_SOCKET, libc::SO_LINGER, unsafe {
+        NonNull::from(&linger)
+            .cast::<[u8; mem::size_of::<libc::linger>()]>()
+            .as_ref()
     });
     match r {
         Ok(()) => {},
@@ -751,9 +747,17 @@ impl BackingStore {
             // This will cause `mmap` to fail, so handle it explicitly.
             return Ok((NonNull::dangling(), length));
         }
-        let address =
-            unsafe { libc::mmap(None, length, PROT_READ | PROT_WRITE, MAP_SHARED, self.fd, 0) }?;
-        assert_ne!(address.as_ptr(), MAP_FAILED);
+        let address = unsafe {
+            libc::mmap(
+                None,
+                length,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                self.fd,
+                0,
+            )
+        }?;
+        assert_ne!(address.as_ptr(), libc::MAP_FAILED);
         Ok((address, length))
     }
 }
@@ -1044,7 +1048,7 @@ fn new_msghdr(
 
 fn create_shmem(name: CString, length: usize) -> io::Result<c_int> {
     let fd = libc::memfd_create(&name, libc::MFD_CLOEXEC)?;
-    libc::ftruncate(fd, length as off_t)?;
+    libc::ftruncate(fd, length as libc::off_t)?;
     Ok(fd)
 }
 
@@ -1057,7 +1061,7 @@ struct UnixCmsg {
 unsafe impl Send for UnixCmsg {}
 
 impl UnixCmsg {
-    const LEN: usize = match cmsg_data_layout(MAX_FDS_IN_CMSG * mem::size_of::<c_int>()) {
+    const LEN: usize = match libc::cmsg_data_layout(MAX_FDS_IN_CMSG * mem::size_of::<c_int>()) {
         Ok(layout) => layout.pad_to_align().size(),
         Err(_) => panic!(),
     };
@@ -1091,9 +1095,9 @@ unsafe fn recvmsg_wrapped(
         BlockingMode::Blocking => {},
     }
 
-    let n = recvmsg(
+    let n = libc::recvmsg(
         fd,
-        unsafe { std::mem::transmute::<&mut libc::msghdr, &mut MaybeUninit<libc::msghdr>>(msg) },
+        unsafe { std::mem::transmute::<&mut msghdr, &mut MaybeUninit<msghdr>>(msg) },
         RECVMSG_FLAGS,
     )?;
 
@@ -1114,6 +1118,6 @@ fn is_socket(fd: c_int) -> bool {
         if libc::fstat(fd, &mut st).is_err() {
             return false;
         }
-        (st.assume_init().st_mode & S_IFMT) == S_IFSOCK
+        (st.assume_init().st_mode & libc::S_IFMT) == libc::S_IFSOCK
     }
 }

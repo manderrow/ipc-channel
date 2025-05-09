@@ -397,7 +397,7 @@ pub fn socketpair(domain: u32, type_: u32, protocol: u32) -> Result<[fd_t; 2], i
     Ok(out)
 }
 
-pub fn ftruncate(fd: fd_t, length: i64) -> Result<(), io::Error> {
+pub fn ftruncate(fd: fd_t, length: off_t) -> Result<(), io::Error> {
     let rc = unsafe { linux_syscall_ftruncate(fd, length) };
     check_error(rc)?;
     assert_eq!(rc, 0);
