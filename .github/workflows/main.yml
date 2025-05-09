@@ -31,6 +31,10 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.15.0-dev.471+369177f0b
+
       - name: rustfmt
         run: cargo fmt --check
 
