@@ -1,5 +1,3 @@
-#![feature(exit_status_error)]
-
 use std::env::{var, var_os};
 use std::path::PathBuf;
 
@@ -30,7 +28,7 @@ fn main() {
     let mut prefix = out_dir;
     prefix.push_str("/zig-out");
 
-    std::process::Command::new("zig")
+    let status = std::process::Command::new("zig")
         .args([
             "build",
             "--cache-dir",
@@ -56,9 +54,10 @@ fn main() {
         ])
         .current_dir(root_dir.join("lib-linux"))
         .status()
-        .unwrap()
-        .exit_ok()
         .unwrap();
+    if !status.success() {
+        panic!("{status}");
+    }
 
     if os == "windows" {
         std::fs::copy(
