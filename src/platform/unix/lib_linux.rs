@@ -1,3 +1,12 @@
+//! These functions, primarily consisting of bindings to Linux syscalls, and
+//! otherwise of simple helpers, may be linked into the program regardless of
+//! the compilation target. This is used when targeting Windows with the
+//! `unix-on-wine` feature to allow a program compiled "for" Windows running
+//! under Wine to communicate with a "host" Linux program. Unfortunately, while
+//! this works under Wine, it does not (as far as my testing showed) under
+//! Proton. I believe this is due to Proton intercepting syscalls to emulate
+//! Windows syscalls.
+
 #![allow(non_camel_case_types)]
 
 use std::alloc;
