@@ -493,8 +493,10 @@ impl OsIpcReceiverSet {
             }
         };
 
-        let events = unsafe { events[0..n].assume_init_ref() };
+        let events = &events[0..n];
         for event in events {
+            let event = unsafe { event.assume_init_ref() };
+
             // We only register this `Poll` for readable events.
             assert_ne!(event.events & libc::EPOLLIN, 0);
 
