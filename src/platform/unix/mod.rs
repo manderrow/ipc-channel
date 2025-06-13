@@ -70,7 +70,7 @@ fn new_sockaddr_un(path: &OsStr) -> (sockaddr_un, libc::socklen_t) {
     let path = path.as_encoded_bytes();
     assert!(
         path.len() < sockaddr.sun_path.len(),
-        "must leave room for NUL terminator"
+        "path is too long, must leave room for NUL terminator: {path:?}"
     );
     sockaddr.sun_path[0..path.len()].copy_from_slice(path);
     sockaddr.sun_path[path.len()] = 0;
