@@ -10,6 +10,7 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
         .pic = true,
+        .link_libc = target.result.os.tag != .windows,
     });
 
     const lib = b.addLibrary(.{
