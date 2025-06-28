@@ -1,3 +1,5 @@
+use itoa::Integer;
+
 #[derive(Default)]
 pub struct CountingWriter {
     pub len: usize,
@@ -27,4 +29,14 @@ impl<E: rkyv::rancor::Source> rkyv::ser::Writer<E> for CountingWriter {
         })?;
         Ok(())
     }
+}
+
+pub fn generate_channel_name_suffix(name: &mut String) {
+    assert!(name.capacity() >= name.len() + u64::MAX_STR_LEN);
+    let mut buf = itoa::Buffer::new();
+    let s = buf.format(fastrand::u64(..));
+    for _ in s.len()..u64::MAX_STR_LEN {
+        name.push('0');
+    }
+    name.push_str(s);
 }

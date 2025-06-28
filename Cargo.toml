@@ -26,21 +26,15 @@ harness = false
 [features]
 default = []
 win32-trace = []
-unix-on-wine = ["dep:fastrand"]
+unix-on-wine = []
 
 [dependencies]
 bytecheck = "0.8.1"
 rkyv = "0.8.10"
 thiserror = "2.0.12"
-uuid = { version = "1", features = ["v4"] }
 
-fastrand = { version = "2.3", optional = true }
-
-[target.'cfg(any(target_os = "linux", target_os = "openbsd", target_os = "freebsd", target_os = "illumos"))'.dependencies]
 fastrand = "2.3"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-fastrand = "2.3"
+itoa = "1.0.15"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 rustix = { version = "1", features = ["process"] }

@@ -23,8 +23,8 @@ use std::{
     time::Duration,
 };
 
+use itoa::Integer;
 use rkyv::util::AlignedVec;
-use uuid::Uuid;
 use windows::{
     Win32::{
         Foundation::{
@@ -119,9 +119,17 @@ const MAX_FRAGMENT_SIZE: usize = 64 * 1024;
 /// Size of the pipe's write buffer, with excess room for the header.
 const PIPE_BUFFER_SIZE: usize = MAX_FRAGMENT_SIZE + 4 * 1024;
 
+fn generate_pipe_name() -> CString {
+    const PREFIX: &str = "\\\\.\\pipe\\rust-ipc-";
+    let mut name = String::with_capacity(PREFIX.len() + u64::MAX_STR_LEN + 1);
+    name.push_str(PREFIX);
+    crate::util::generate_channel_name_suffix(&mut name);
+    // one extra byte is left for the null terminator to avoid reallocating
+    CString::new(name).unwrap()
+}
+
 pub fn channel() -> Result<(OsIpcSender, OsIpcReceiver), WinError> {
-    let pipe_id = make_pipe_id();
-    let pipe_name = make_pipe_name(&pipe_id);
+    let pipe_name = generate_pipe_name();
 
     let receiver = OsIpcReceiver::new_named(&pipe_name)?;
     let sender = OsIpcSender::connect_named(&pipe_name)?;
@@ -129,6 +137,7 @@ pub fn channel() -> Result<(OsIpcSender, OsIpcReceiver), WinError> {
     Ok((sender, receiver))
 }
 
+// TODO: don't do this, or figure out how to detect collisions
 /// Unify the creation of sender and receiver duplex pipes to allow for either to be spawned first.
 /// Requires the use of a duplex and therefore lets both sides read and write.
 unsafe fn create_duplex(pipe_name: &CString) -> Result<HANDLE, WinError> {
@@ -242,14 +251,6 @@ impl OutOfBandMessage {
             || !self.shmem_handles.is_empty()
             || self.big_data_receiver_handle.is_some()
     }
-}
-
-fn make_pipe_id() -> Uuid {
-    Uuid::new_v4()
-}
-
-fn make_pipe_name(pipe_id: &Uuid) -> CString {
-    CString::new(format!("\\\\.\\pipe\\rust-ipc-{}", pipe_id)).unwrap()
 }
 
 /// Duplicate a given handle from this process to the target one, passing the
@@ -1262,8 +1263,9 @@ impl Clone for OsIpcSender {
 
 impl OsIpcSender {
     pub fn connect(name: &str) -> Result<OsIpcSender, ConnectError> {
-        let pipe_name = make_pipe_name(&Uuid::parse_str(name).map_err(ConnectError::UuidError)?);
-        OsIpcSender::connect_named(&pipe_name).map_err(ConnectError::WinError)
+        // TODO: don't panic
+        let c_name = CString::new(name).unwrap();
+        OsIpcSender::connect_named(&c_name).map_err(ConnectError::WinError)
     }
 
     pub fn get_max_fragment_size() -> usize {
@@ -1890,10 +1892,9 @@ pub struct OsIpcOneShotServer {
 
 impl OsIpcOneShotServer {
     pub fn new() -> Result<(OsIpcOneShotServer, String), WinError> {
-        let pipe_id = make_pipe_id();
-        let pipe_name = make_pipe_name(&pipe_id);
+        let pipe_name = generate_pipe_name();
         let receiver = OsIpcReceiver::new_named(&pipe_name)?;
-        Ok((OsIpcOneShotServer { receiver }, pipe_id.to_string()))
+        Ok((OsIpcOneShotServer { receiver }, pipe_name.into_string().unwrap()))
     }
 
     pub fn accept(self) -> Result<(OsIpcReceiver, IpcMessage), WinIpcError> {
@@ -1949,14 +1950,14 @@ impl OsOpaqueIpcChannel {
 #[derive(Debug)]
 pub enum ConnectError {
     WinError(WinError),
-    UuidError(uuid::Error),
+    IdParseError(std::num::ParseIntError),
 }
 
 impl fmt::Display for ConnectError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::WinError(e) => write!(f, "{}", e),
-            Self::UuidError(e) => write!(f, "{}", e),
+            Self::IdParseError(e) => write!(f, "{}", e),
         }
     }
 }
@@ -1967,7 +1968,7 @@ impl From<ConnectError> for io::Error {
     fn from(error: ConnectError) -> io::Error {
         match error {
             ConnectError::WinError(err) => io::Error::from_raw_os_error(err.code().0),
-            ConnectError::UuidError(e) => io::Error::other(e),
+            ConnectError::IdParseError(e) => io::Error::other(e),
         }
     }
 }

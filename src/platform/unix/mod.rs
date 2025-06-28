@@ -24,6 +24,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, UNIX_EPOCH};
 
+use itoa::Integer;
+
 use crate::ipc::IpcMessage;
 
 // FIXME: need to use libc on non-Linux or unix-on-wine platforms
@@ -614,14 +616,11 @@ impl OsIpcOneShotServer {
             ))));
         }
         const PREFIX: &str = "/socket-";
-        const RAND_LEN: usize = 6;
-        name.reserve(PREFIX.len() + RAND_LEN);
+        name.reserve(PREFIX.len() + u64::MAX_STR_LEN);
         name.push_str(PREFIX);
         let base_len = name.len();
         for _ in 0..65536 {
-            for _ in 0..RAND_LEN {
-                name.push(fastrand::alphanumeric());
-            }
+            crate::util::generate_channel_name_suffix(&mut name);
 
             if Path::new(&name).try_exists()? {
                 // truncate and try again

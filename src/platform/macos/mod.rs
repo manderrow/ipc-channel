@@ -28,6 +28,8 @@ use std::slice;
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
+use itoa::Integer;
+
 mod mach_sys;
 
 /// The size that we preallocate on the stack to receive messages. If the message is larger than
@@ -260,21 +262,18 @@ impl OsIpcReceiver {
                 mach_port_extract_right(port, MACH_MSG_TYPE_MAKE_SEND as u32)?;
             debug_assert!(acquired_right == MACH_MSG_TYPE_PORT_SEND);
 
-            let mut os_result;
-            let mut name = BOOTSTRAP_PREFIX.to_owned();
-            loop {
-                use std::fmt::Write;
-                write!(name, "{}\0", fastrand::i64(..)).unwrap();
+            let mut name = String::with_capacity(BOOTSTRAP_PREFIX.len() + u64::MAX_STR_LEN + 1);
+            name.push_str(BOOTSTRAP_PREFIX);
+            for _ in 0..65536 {
+                crate::util::generate_channel_name_suffix(&mut name);
+                name.push('\0');
+
                 let c_name = CStr::from_bytes_with_nul(name.as_bytes()).unwrap();
-                os_result = bootstrap_register2(bootstrap_port, c_name.as_ptr(), right, 0);
-                if os_result == BOOTSTRAP_NAME_IN_USE {
-                    name.truncate(BOOTSTRAP_PREFIX.len());
-                    continue;
+                match bootstrap_register2(bootstrap_port, c_name.as_ptr(), right, 0) {
+                    BOOTSTRAP_NAME_IN_USE => name.truncate(BOOTSTRAP_PREFIX.len()),
+                    BOOTSTRAP_SUCCESS => break,
+                    os_result => return Err(MachError::from(os_result)),
                 }
-                if os_result != BOOTSTRAP_SUCCESS {
-                    return Err(MachError::from(os_result));
-                }
-                break;
             }
             Ok((right, name))
         }
@@ -446,6 +445,7 @@ impl OsIpcSender {
             }
 
             let mut port = 0;
+            // TODO: don't panic
             let c_name = CString::new(name).unwrap();
             let os_result = bootstrap_look_up(bootstrap_port, c_name.as_ptr(), &mut port);
             if os_result == BOOTSTRAP_SUCCESS {
