@@ -14,11 +14,10 @@ use self::mach_sys::{mach_msg_timeout_t, mach_port_limits_t, mach_port_msgcount_
 use self::mach_sys::{mach_port_right_t, mach_port_t, mach_task_self_, vm_inherit_t};
 use crate::ipc::IpcMessage;
 
-use rand::Rng;
 use std::cell::Cell;
 use std::convert::TryInto;
 use std::error::Error as StdError;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::fmt::{self, Debug, Formatter};
 use std::io;
 use std::marker::PhantomData;
@@ -36,7 +35,7 @@ mod mach_sys;
 const SMALL_MESSAGE_SIZE: usize = 4096;
 
 /// A string to prepend to our bootstrap ports.
-static BOOTSTRAP_PREFIX: &str = "org.rust-lang.ipc-channel.";
+const BOOTSTRAP_PREFIX: &str = "org.rust-lang.ipc-channel.";
 
 const BOOTSTRAP_NAME_IN_USE: kern_return_t = 1101;
 const BOOTSTRAP_SUCCESS: kern_return_t = 0;
@@ -262,12 +261,14 @@ impl OsIpcReceiver {
             debug_assert!(acquired_right == MACH_MSG_TYPE_PORT_SEND);
 
             let mut os_result;
-            let mut name;
+            let mut name = BOOTSTRAP_PREFIX.to_owned();
             loop {
-                name = format!("{}{}", BOOTSTRAP_PREFIX, rand::rng().random::<i64>());
-                let c_name = CString::new(name.clone()).unwrap();
+                use std::fmt::Write;
+                write!(name, "{}\0", fastrand::i64(..)).unwrap();
+                let c_name = CStr::from_bytes_with_nul(name.as_bytes()).unwrap();
                 os_result = bootstrap_register2(bootstrap_port, c_name.as_ptr(), right, 0);
                 if os_result == BOOTSTRAP_NAME_IN_USE {
+                    name.truncate(BOOTSTRAP_PREFIX.len());
                     continue;
                 }
                 if os_result != BOOTSTRAP_SUCCESS {

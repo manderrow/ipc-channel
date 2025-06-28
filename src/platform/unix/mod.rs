@@ -24,8 +24,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, UNIX_EPOCH};
 
-use rand::Rng;
-
 use crate::ipc::IpcMessage;
 
 // FIXME: need to use libc on non-Linux or unix-on-wine platforms
@@ -621,9 +619,8 @@ impl OsIpcOneShotServer {
         name.push_str(PREFIX);
         let base_len = name.len();
         for _ in 0..65536 {
-            let mut rng = rand::rng();
             for _ in 0..RAND_LEN {
-                name.push(rng.sample(rand::distr::Alphanumeric) as char);
+                name.push(fastrand::alphanumeric());
             }
 
             if Path::new(&name).try_exists()? {
