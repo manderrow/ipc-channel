@@ -275,6 +275,8 @@ impl OsIpcReceiver {
                     os_result => return Err(MachError::from(os_result)),
                 }
             }
+            // remove NUL byte
+            name.pop().unwrap();
             Ok((right, name))
         }
     }
