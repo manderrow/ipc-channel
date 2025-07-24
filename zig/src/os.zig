@@ -53,6 +53,9 @@ pub const BlockingMode = union(enum) {
     timeout: c_uint,
 };
 
+// TODO: rename Empty or ChannelClosed to be consistent
+pub const SelectError = error{ Empty, ChannelClosed };
+
 fn expectEqualStringMessages(
     expected_data: []const u8,
     expected_channel_count: usize,
@@ -206,7 +209,7 @@ test "receiver set" {
     const data = "1234567";
     try chan0.sd.send(alloc, data, &.{}, &.{});
     {
-        const result = try rx_set.select(alloc);
+        const result = try rx_set.select(alloc, .blocking);
         try std.testing.expectEqual(rx0_id, result.id);
         try std.testing.expectEqual(SelectionResult.Event.Tag.received, @as(SelectionResult.Event.Tag, result.event));
         var ipc_message = result.event.received;
@@ -216,7 +219,7 @@ test "receiver set" {
 
     try chan1.sd.send(alloc, data, &.{}, &.{});
     {
-        const result = try rx_set.select(alloc);
+        const result = try rx_set.select(alloc, .blocking);
         try std.testing.expectEqual(rx1_id, result.id);
         try std.testing.expectEqual(SelectionResult.Event.Tag.received, @as(SelectionResult.Event.Tag, result.event));
         var ipc_message = result.event.received;
@@ -229,7 +232,7 @@ test "receiver set" {
     var received0 = false;
     var received1 = false;
     while (!received0 or !received1) {
-        const results = try rx_set.selectMany(alloc);
+        const results = try rx_set.selectMany(alloc, .blocking);
         defer {
             for (results) |*result| {
                 switch (result.event) {
@@ -298,7 +301,7 @@ test "server accept first" {
 
         const thread = try std.Thread.spawn(.{}, struct {
             fn f(name: [:0]const u8) void {
-                std.time.sleep(30 * std.time.ns_per_ms);
+                std.Thread.sleep(30 * std.time.ns_per_ms);
                 const tx = Sender.connect(name) catch |e| {
                     std.debug.print("connect: {}", .{e});
                     return;

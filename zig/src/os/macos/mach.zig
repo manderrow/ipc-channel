@@ -203,18 +203,18 @@ pub const KernelError = error{
 };
 
 pub fn checkKernelReturn(code: kern_return_t) KernelError!void {
-    return switch (code) {
+    switch (code) {
         .SUCCESS => {},
-        .NO_SPACE => error.OutOfMemory,
-        .INVALID_NAME => error.InvalidName,
-        .INVALID_TASK => error.InvalidTask,
-        .INVALID_RIGHT => error.InvalidRight,
-        .INVALID_VALUE => error.InvalidValue,
-        .INVALID_CAPABILITY => error.InvalidCapability,
-        .UREFS_OVERFLOW => error.UrefsOverflow,
-        .NOT_IN_SET => error.NotInSet,
-        else => error.Unexpected,
-    };
+        .NO_SPACE => return error.OutOfMemory,
+        .INVALID_NAME => return error.InvalidName,
+        .INVALID_TASK => return error.InvalidTask,
+        .INVALID_RIGHT => return error.InvalidRight,
+        .INVALID_VALUE => return error.InvalidValue,
+        .INVALID_CAPABILITY => return error.InvalidCapability,
+        .UREFS_OVERFLOW => return error.UrefsOverflow,
+        .NOT_IN_SET => return error.NotInSet,
+        else => return error.Unexpected,
+    }
 }
 
 pub const kern_return_t = enum(std.c.kern_return_t) {
@@ -700,28 +700,33 @@ pub extern "C" fn vm_allocate(
     flags: VmAllocationFlags,
 ) kern_return_t;
 
+// NOTE: I'm not certain this will always be the correct type. Zig does not export
+// `std.c.darwin.vm_address_t` and they happen to have the same type right now.
+const vm_address_t = std.c.mach_vm_address_t;
+
+const boolean_t = c_int;
+
 pub extern "C" fn vm_remap(
     target_task: std.c.vm_map_t,
-    target_address: **anyopaque,
+    target_address: *?*anyopaque,
     size: std.c.vm_size_t,
-    mask: std.c.vm_address_t,
+    mask: vm_address_t,
     flags: VmAllocationFlags,
     src_task: std.c.vm_map_t,
     src_address: *anyopaque,
-    copy: std.c.boolean_t,
+    copy: boolean_t,
     cur_protection: *std.c.vm_prot_t,
     max_protection: *std.c.vm_prot_t,
     inheritance: std.c.vm_inherit_t,
 ) kern_return_t;
 
+/// Note that the default options will allocate the new region at the specified virtual address, if possible.
 pub const VmAllocationFlags = packed struct(c_int) {
+    //  (for DEBUG kernel config only, ignored for other configs)
+    //  Do not check that there is no stale pmap mapping for the new VM region.
+    //  This is useful for kernel memory allocations at bootstrap when building
+    //  the initial kernel address space while some memory is already in use.
     // VM_FLAGS_NO_PMAP_CHECK
-    ///  (for DEBUG kernel config only, ignored for other configs)
-    ///  Do not check that there is no stale pmap mapping for the new VM region.
-    ///  This is useful for kernel memory allocations at bootstrap when building
-    ///  the initial kernel address space while some memory is already in use.
-    /// See docs of `anywhere`.
-    const fixed: VmAllocationFlags = .{};
 
     /// Allocate new VM region anywhere it would fit in the address space. If `false`,
     /// allocate new VM region at the specified virtual address, if possible.

@@ -18,6 +18,8 @@ pub fn build(b: *std.Build) void {
 
     const lib_unit_tests = b.addTest(.{
         .root_module = lib.mod,
+        // TODO: when Zig's backend stops producing code that segfaults on macOS, remove override
+        .use_llvm = if (target.result.os.tag == .macos) true else null,
     });
 
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);

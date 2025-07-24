@@ -594,9 +594,16 @@ pub const ReceiverSet = struct {
         return .{ .id = fd };
     }
 
-    pub fn select(self: *@This(), alloc: std.mem.Allocator) !SelectionResult {
-        // Poll until we receive at least one event.
-        const n = std.posix.epoll_wait(self.epoll, self.events, -1);
+    fn waitForEvents(self: *@This(), blocking_mode: BlockingMode) error{Overflow}!usize {
+        return std.posix.epoll_wait(self.epoll, self.events, switch (blocking_mode) {
+            .nonblocking => 0,
+            .blocking => -1,
+            .timeout => |duration| std.math.cast(i32, duration) orelse return error.Overflow,
+        });
+    }
+
+    pub fn select(self: *@This(), alloc: std.mem.Allocator, blocking_mode: BlockingMode) !SelectionResult {
+        const n = try self.waitForEvents(blocking_mode);
 
         for (self.events[0..n]) |event| {
             // We only register this `Poll` for readable events.
@@ -633,12 +640,11 @@ pub const ReceiverSet = struct {
         return error.Empty;
     }
 
-    pub fn selectMany(self: *@This(), alloc: std.mem.Allocator) ![]SelectionResult {
+    pub fn selectMany(self: *@This(), alloc: std.mem.Allocator, blocking_mode: BlockingMode) ![]SelectionResult {
         var selection_results: std.ArrayListUnmanaged(SelectionResult) = .empty;
         errdefer selection_results.deinit(alloc);
 
-        // Poll until we receive at least one event.
-        const n = std.posix.epoll_wait(self.epoll, self.events, -1);
+        const n = try self.waitForEvents(blocking_mode);
 
         for (self.events[0..n]) |event| {
             // We only register this `Poll` for readable events.
@@ -742,7 +748,7 @@ pub const OneShotServer = struct {
                 // try again with different random characters
                 error.AddressInUse => continue,
                 error.AccessDenied => {
-                    std.debug.print("Unable to bind to socket {}\n", .{std.zig.fmtEscapes(name.span())});
+                    std.debug.print("Unable to bind to socket {f}\n", .{std.zig.fmtString(name.span())});
                     return e;
                 },
                 else => return e,

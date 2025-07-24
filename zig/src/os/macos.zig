@@ -112,6 +112,7 @@ pub const Receiver = struct {
                         Port.null.name,
                     ));
                 },
+                .RCV_TIMED_OUT => return error.Empty,
                 else => {
                     try mach.checkMachReturn(rt);
                     break;
@@ -177,6 +178,21 @@ pub const Receiver = struct {
         };
     }
 
+    pub fn selectMany(self: Receiver, alloc: std.mem.Allocator, blocking_mode: BlockingMode) ![]SelectionResult {
+        var selection_results: std.ArrayListUnmanaged(SelectionResult) = .empty;
+        errdefer selection_results.deinit(alloc);
+
+        try selection_results.append(alloc, try self.select(alloc, blocking_mode));
+        while (true) {
+            try selection_results.append(alloc, self.select(alloc, .nonblocking) catch |err| switch (err) {
+                error.Empty => break,
+                else => |e| return e,
+            });
+        }
+
+        return selection_results.toOwnedSlice(alloc);
+    }
+
     pub fn sender(self: Receiver) !Sender {
         return .{ .port = try self.port.extractRight(.make_send) };
     }
@@ -199,7 +215,7 @@ pub const Receiver = struct {
         const result = try self.select(alloc, blocking_mode);
         return switch (result.event) {
             .received => |msg| msg,
-            .closed => error.MACH_NOTIFY_NO_SENDERS,
+            .closed => error.ChannelClosed,
         };
     }
 
@@ -420,12 +436,12 @@ pub const ReceiverSet = struct {
         };
     }
 
-    pub fn deinit(self: *@This(), alloc: std.mem.Allocator) !void {
+    pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
         for (self.ports.items) |port| {
-            port.release(.recv) catch |e| std.debug.panic("release({}): {}", .{ self.port.name, e });
+            port.release(.recv) catch |e| std.debug.panic("release({}): {}", .{ port.name, e });
         }
         self.ports.deinit(alloc);
-        try self.port.release(.port_set);
+        self.port.release(.port_set) catch |e| std.debug.panic("release({}): {}", .{ self.port.name, e });
         self.* = undefined;
     }
 
@@ -436,8 +452,12 @@ pub const ReceiverSet = struct {
         return .{ .id = receiver.port.name };
     }
 
-    pub fn select(self: *@This(), alloc: std.mem.Allocator) !SelectionResult {
-        return (Receiver{ .port = self.port }).select(alloc, .blocking);
+    pub fn select(self: *@This(), alloc: std.mem.Allocator, blocking_mode: BlockingMode) !SelectionResult {
+        return (Receiver{ .port = self.port }).select(alloc, blocking_mode);
+    }
+
+    pub fn selectMany(self: *@This(), alloc: std.mem.Allocator, blocking_mode: BlockingMode) ![]SelectionResult {
+        return (Receiver{ .port = self.port }).selectMany(alloc, blocking_mode);
     }
 };
 
@@ -521,29 +541,32 @@ pub const SharedMemory = struct {
         mach.checkKernelReturn(rt) catch |e| std.debug.panic("vm_deallocate: {}", .{e});
     }
 
-    pub fn clone(self: *@This()) !SharedMemory {
-        var address: [*]u8 = undefined;
+    pub fn clone(self: @This()) !SharedMemory {
+        // NOTE: this must be null, not undefined, otherwise vm_remap returns NO_SPACE.
+        var address: ?[*]u8 = null;
+        var cur_prot: std.c.vm_prot_t = 0;
+        var max_prot: std.c.vm_prot_t = 0;
         const rt = mach.vm_remap(
             mach.mach_task_self(),
-            &address,
+            @ptrCast(&address),
             self.data.len,
             0,
-            1,
+            .{ .anywhere = true },
             mach.mach_task_self(),
             self.data.ptr,
-            0,
-            &0,
-            &0,
+            @intFromBool(false),
+            &cur_prot,
+            &max_prot,
             VM_INHERIT_SHARE,
         );
         try mach.checkKernelReturn(rt);
-        return .{ .data = address[0..self.data.len] };
+        return .{ .data = address.?[0..self.data.len] };
     }
 
     pub fn fromByte(byte: u8, length: usize) !SharedMemory {
-        const address = try mach.vmAllocate(length);
-        @memset(address, byte);
-        return address;
+        const buf = try mach.vmAllocate(length);
+        @memset(buf, byte);
+        return .{ .data = buf };
     }
 
     pub fn fromBytes(bytes: []const u8) !SharedMemory {
