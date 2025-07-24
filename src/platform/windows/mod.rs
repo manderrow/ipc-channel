@@ -1894,7 +1894,10 @@ impl OsIpcOneShotServer {
     pub fn new() -> Result<(OsIpcOneShotServer, String), WinError> {
         let pipe_name = generate_pipe_name();
         let receiver = OsIpcReceiver::new_named(&pipe_name)?;
-        Ok((OsIpcOneShotServer { receiver }, pipe_name.into_string().unwrap()))
+        Ok((
+            OsIpcOneShotServer { receiver },
+            pipe_name.into_string().unwrap(),
+        ))
     }
 
     pub fn accept(self) -> Result<(OsIpcReceiver, IpcMessage), WinIpcError> {
