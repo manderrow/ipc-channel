@@ -27,7 +27,7 @@ pub export fn linux_syscall_mmap(
     fd: std.os.linux.fd_t,
     offset: i64,
 ) usize {
-    return std.os.linux.mmap(addr, len, prot, flags, fd, offset);
+    return std.os.linux.mmap(addr, len, @bitCast(@as(u32, @intCast(prot))), flags, fd, offset);
 }
 pub export fn linux_syscall_munmap(addr: [*]const u8, len: usize) usize {
     return std.os.linux.munmap(addr, len);
@@ -112,8 +112,10 @@ pub export fn linux_syscall_socket(domain: u32, ty: u32, protocol: u32) usize {
     return std.os.linux.socket(domain, ty, protocol);
 }
 
-pub export fn linux_syscall_fstat(fd: std.os.linux.fd_t, buf: *std.os.linux.Stat) usize {
-    return std.os.linux.fstat(fd, buf);
+/// `buf` points to the architecture's `struct stat`, which the standard library no longer defines.
+pub export fn linux_syscall_fstat(fd: std.os.linux.fd_t, buf: *anyopaque) usize {
+    const sys: std.os.linux.SYS = if (@hasField(std.os.linux.SYS, "fstat64")) .fstat64 else .fstat;
+    return std.os.linux.syscall2(sys, @as(usize, @bitCast(@as(isize, fd))), @intFromPtr(buf));
 }
 
 pub export fn linux_syscall_close(fd: std.os.linux.fd_t) usize {
@@ -133,7 +135,7 @@ pub export fn linux_syscall_getpid() std.os.linux.pid_t {
 }
 
 fn errToRc(e: std.os.linux.E) usize {
-    return @bitCast(@as(isize, -@as(i32, @intFromEnum(e))));
+    return @bitCast(@as(isize, -@as(i32, @backingInt(e))));
 }
 
 /// On success, returns the length. On failure, returns an error using the same encoding as syscalls.
@@ -141,7 +143,8 @@ pub export fn linux_helper_temp_dir(buf_vec: std.posix.iovec) usize {
     const buf = buf_vec.base[0..buf_vec.len];
     switch (builtin.os.tag) {
         .windows => {
-            if (std.process.getenvW(std.unicode.utf8ToUtf16LeStringLiteral("TMPDIR"))) |path| {
+            const environ: std.process.Environ = .{ .block = .global };
+            if (environ.getWindows(std.unicode.utf8ToUtf16LeStringLiteral("TMPDIR"))) |path| {
                 const len = std.unicode.calcWtf8Len(path);
                 if (len > buf.len) {
                     return errToRc(.NAMETOOLONG);
@@ -150,7 +153,8 @@ pub export fn linux_helper_temp_dir(buf_vec: std.posix.iovec) usize {
             }
         },
         else => {
-            if (std.posix.getenv("TMPDIR")) |path| {
+            if (std.c.getenv("TMPDIR")) |path_ptr| {
+                const path = std.mem.span(path_ptr);
                 if (path.len > buf.len) {
                     return errToRc(.NAMETOOLONG);
                 }
