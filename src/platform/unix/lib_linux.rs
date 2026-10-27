@@ -39,6 +39,9 @@ pub type nfds_t = usize;
 pub type sa_family_t = u16;
 pub type socklen_t = u32;
 pub type pid_t = i32;
+pub type uid_t = u32;
+pub type gid_t = u32;
+pub type off_t = i64;
 
 pub const EPOLLIN: u32 = 0x1;
 
@@ -67,6 +70,11 @@ pub const MFD_CLOEXEC: u32 = 0x0001;
 
 pub const S_IFMT: mode_t = 0o17_0000;
 pub const S_IFSOCK: mode_t = 0o14_0000;
+
+pub const AT_EMPTY_PATH: u32 = 0x1000;
+
+pub const STATX_TYPE: u32 = 0x0001;
+pub const STATX_SIZE: u32 = 0x0200;
 
 pub const SO_SNDBUF: u32 = 7;
 pub const SO_LINGER: u32 = 13;
@@ -173,99 +181,42 @@ pub struct pollfd {
     pub revents: i16,
 }
 
-#[cfg(target_arch = "x86")]
-mod arch {
-    use super::*;
-
-    pub type nlink_t = u32;
-    pub type blksize_t = i32;
-    pub type time_t = i32;
-    pub type time_nsec_t = i32;
-
-    #[repr(C)]
-    pub struct stat {
-        pub dev: dev_t,
-        __dev_padding: u32,
-        __ino_truncated: u32,
-
-        pub mode: mode_t,
-        pub nlink: nlink_t,
-        pub uid: uid_t,
-        pub gid: gid_t,
-        pub rdev: dev_t,
-        __rdev_padding: u32,
-
-        pub size: off_t,
-        pub blksize: blksize_t,
-        pub blocks: blkcnt_t,
-
-        pub atime: timespec,
-        pub mtime: timespec,
-        pub ctime: timespec,
-
-        pub ino: ino_t,
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-mod arch {
-    use super::*;
-
-    pub type nlink_t = u64;
-    pub type blksize_t = i64;
-    pub type time_t = i64;
-    pub type time_nsec_t = i64;
-
-    #[repr(C)]
-    pub struct stat {
-        pub dev: dev_t,
-        pub ino: ino_t,
-        pub nlink: nlink_t,
-
-        pub mode: mode_t,
-        pub uid: uid_t,
-        pub gid: gid_t,
-        __pad0: u32,
-        pub rdev: dev_t,
-        pub size: off_t,
-        pub blksize: blksize_t,
-        pub blocks: blkcnt_t,
-
-        pub atime: timespec,
-        pub mtime: timespec,
-        pub ctime: timespec,
-        __unused: [i64; 3],
-    }
-}
-
-pub type dev_t = u64;
-pub type ino_t = u64;
-pub type nlink_t = arch::nlink_t;
-pub type uid_t = u32;
-pub type gid_t = u32;
-pub type off_t = i64;
-pub type blksize_t = arch::blksize_t;
-pub type blkcnt_t = i64;
-pub type time_t = arch::time_t;
-pub type time_nsec_t = arch::time_nsec_t;
-
 #[repr(C)]
-pub struct kernel_timespec {
-    sec: i64,
-    nsec: i64,
+pub struct statx_timestamp {
+    pub sec: i64,
+    pub nsec: u32,
+    __pad1: u32,
 }
 
-#[cfg(not(target_arch = "riscv32"))]
+/// Unlike `struct stat`, this has the same layout on every architecture.
 #[repr(C)]
-pub struct timespec {
-    sec: isize,
-    nsec: isize,
+pub struct statx {
+    pub mask: u32,
+    pub blksize: u32,
+    pub attributes: u64,
+    pub nlink: u32,
+    pub uid: uid_t,
+    pub gid: gid_t,
+    pub mode: u16,
+    __spare0: u16,
+    pub ino: u64,
+    pub size: u64,
+    pub blocks: u64,
+    pub attributes_mask: u64,
+
+    pub atime: statx_timestamp,
+    pub btime: statx_timestamp,
+    pub ctime: statx_timestamp,
+    pub mtime: statx_timestamp,
+
+    pub rdev_major: u32,
+    pub rdev_minor: u32,
+    pub dev_major: u32,
+    pub dev_minor: u32,
+    __spare2: [u64; 14],
 }
 
-#[cfg(target_arch = "riscv32")]
-pub type timespec = kernel_timespec;
-
-pub type stat = arch::stat;
+const _: () = assert!(size_of::<statx>() == 0x100);
 
 #[link(name = "linux", kind = "static")]
 unsafe extern "C" {
@@ -348,7 +299,14 @@ unsafe extern "C" {
 
     pub fn linux_syscall_socket(domain: u32, ty: u32, protocol: u32) -> usize;
 
-    pub fn linux_syscall_fstat(fd: fd_t, buf: &mut MaybeUninit<stat>) -> usize;
+    /// `path` must be non-null.
+    pub fn linux_syscall_statx(
+        dirfd: fd_t,
+        path: *const u8,
+        flags: u32,
+        mask: u32,
+        buf: &mut MaybeUninit<statx>,
+    ) -> usize;
 
     pub fn linux_syscall_close(fd: fd_t) -> usize;
 
@@ -561,8 +519,14 @@ pub fn socket(domain: u32, ty: u32, protocol: u32) -> Result<fd_t, io::Error> {
     Ok(validate_fd(rc, "socket"))
 }
 
-pub fn fstat(fd: fd_t, buf: &mut MaybeUninit<stat>) -> Result<(), io::Error> {
-    let rc = unsafe { linux_syscall_fstat(fd, buf) };
+pub fn statx(
+    dirfd: fd_t,
+    path: &CStr,
+    flags: u32,
+    mask: u32,
+    buf: &mut MaybeUninit<statx>,
+) -> Result<(), io::Error> {
+    let rc = unsafe { linux_syscall_statx(dirfd, path.as_ptr().cast::<u8>(), flags, mask, buf) };
     check_error(rc)?;
     assert_eq!(rc, 0);
     Ok(())

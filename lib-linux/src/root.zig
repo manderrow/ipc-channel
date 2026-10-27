@@ -112,10 +112,14 @@ pub export fn linux_syscall_socket(domain: u32, ty: u32, protocol: u32) usize {
     return std.os.linux.socket(domain, ty, protocol);
 }
 
-/// `buf` points to the architecture's `struct stat`, which the standard library no longer defines.
-pub export fn linux_syscall_fstat(fd: std.os.linux.fd_t, buf: *anyopaque) usize {
-    const sys: std.os.linux.SYS = if (@hasField(std.os.linux.SYS, "fstat64")) .fstat64 else .fstat;
-    return std.os.linux.syscall2(sys, @as(usize, @bitCast(@as(isize, fd))), @intFromPtr(buf));
+pub export fn linux_syscall_statx(
+    dirfd: std.os.linux.fd_t,
+    path: [*:0]const u8,
+    flags: u32,
+    mask: std.os.linux.STATX,
+    buf: *std.os.linux.Statx,
+) usize {
+    return std.os.linux.statx(dirfd, path, flags, mask, buf);
 }
 
 pub export fn linux_syscall_close(fd: std.os.linux.fd_t) usize {

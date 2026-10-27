@@ -738,7 +738,7 @@ impl BackingStore {
             Some(length) => length,
             None => {
                 let mut st = mem::MaybeUninit::uninit();
-                libc::fstat(self.fd, &mut st)?;
+                libc::statx(self.fd, c"", libc::AT_EMPTY_PATH, libc::STATX_SIZE, &mut st)?;
                 unsafe { st.assume_init() }.size as usize
             },
         };
@@ -1114,9 +1114,9 @@ unsafe fn recvmsg_wrapped(
 fn is_socket(fd: c_int) -> bool {
     unsafe {
         let mut st = mem::MaybeUninit::uninit();
-        if libc::fstat(fd, &mut st).is_err() {
+        if libc::statx(fd, c"", libc::AT_EMPTY_PATH, libc::STATX_TYPE, &mut st).is_err() {
             return false;
         }
-        (st.assume_init().mode & libc::S_IFMT) == libc::S_IFSOCK
+        (libc::mode_t::from(st.assume_init().mode) & libc::S_IFMT) == libc::S_IFSOCK
     }
 }
